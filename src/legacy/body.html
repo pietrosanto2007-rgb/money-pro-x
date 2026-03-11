@@ -1,0 +1,998 @@
+<canvas id="cfcanvas"></canvas>
+<div id="toasts"></div>
+<div id="achPop" class="hidden">
+  <div class="card p-3.5 flex items-center gap-3" style="min-width:270px;box-shadow:var(--shL);animation:pop .5s cubic-bezier(.34,1.56,.64,1) both">
+    <div id="achIco" class="w-11 h-11 rounded-2xl flex items-center justify-center text-2xl" style="background:var(--bg2)"></div>
+    <div><p class="text-[9px] font-bold uppercase tracking-wider" style="color:var(--br)">Traguardo! 🎉</p><p id="achTxt" class="font-bold text-sm mt-0.5"></p></div>
+  </div>
+</div>
+
+<!-- TOP BAR -->
+<div class="fixed top-0 left-0 right-0 z-30 flex justify-between items-center pointer-events-none" style="padding:max(env(safe-area-inset-top),14px) 16px 8px">
+  <div class="pointer-events-auto flex items-center gap-2">
+    <div class="flex items-center gap-1.5 px-3 py-1.5 rounded-full border" style="background:var(--card);border-color:var(--bo)">
+      <div id="sDot" class="w-2 h-2 rounded-full" style="background:var(--ok);box-shadow:0 0 0 0 rgba(0,200,150,.6);animation:shimmer-dot 2s infinite"></div>
+      <span id="sTxt" class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Live</span>
+    </div>
+    <div id="undoBtn" onclick="undoTx()" class="hidden pointer-events-auto flex items-center gap-1.5 px-3 py-1.5 rounded-full border cursor-pointer" style="background:var(--card);border-color:var(--bo)">
+      <i data-lucide="rotate-ccw" class="w-3 h-3" style="color:var(--wn)"></i>
+      <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--wn)">Annulla</span>
+    </div>
+  </div>
+  <div class="pointer-events-auto flex gap-2 items-center">
+    <button onclick="openCommand()" class="w-8 h-8 rounded-full border flex items-center justify-center" style="background:var(--card);border-color:var(--bo)" title="Comandi">
+      <i data-lucide="command" class="w-3.5 h-3.5" style="color:var(--t2)"></i>
+    </button>
+    <button onclick="openCalc()" class="w-8 h-8 rounded-full border flex items-center justify-center" style="background:var(--card);border-color:var(--bo)">
+      <i data-lucide="calculator" class="w-3.5 h-3.5" style="color:var(--t2)"></i>
+    </button>
+    <button onclick="toggleLayoutMode()" class="w-8 h-8 rounded-full border flex items-center justify-center" style="background:var(--card);border-color:var(--bo)" title="Layout">
+      <i data-lucide="move" class="w-3.5 h-3.5" style="color:var(--t2)"></i>
+    </button>
+    <button id="balToggleBtn" onclick="toggleBalanceVisibility()" class="w-8 h-8 rounded-full border flex items-center justify-center" style="background:var(--card);border-color:var(--bo)" title="Privacy">
+      <i data-lucide="eye" class="w-3.5 h-3.5" style="color:var(--t2)"></i>
+    </button>
+    <div class="w-8 h-8 rounded-2xl flex items-center justify-center text-white font-black text-sm syne" style="background:linear-gradient(135deg,var(--br),var(--acc))">M</div>
+  </div>
+</div>
+
+<!-- OVERLAY -->
+<div id="ov" class="ov fixed inset-0" onclick="closeAll()"></div>
+
+<!-- ===== MODAL: ADD TX ===== -->
+<div id="addM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:94vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 id="mTitle" class="text-xl font-bold">Nuovo Movimento</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns">
+    <!-- type toggle -->
+    <div class="flex p-1 rounded-2xl mb-4" style="background:var(--bg2)">
+      <button id="btnOut" onclick="setFType('expense')" class="flex-1 py-2.5 text-sm font-bold rounded-xl transition-all" style="background:var(--card);color:var(--t);box-shadow:0 2px 8px rgba(0,0,0,.08)"><i data-lucide="arrow-up" class="w-3 h-3 inline mr-1" style="color:var(--bd)"></i>Uscita</button>
+      <button id="btnIn" onclick="setFType('income')" class="flex-1 py-2.5 text-sm font-bold rounded-xl transition-all" style="color:var(--t2)"><i data-lucide="arrow-down" class="w-3 h-3 inline mr-1" style="color:var(--ok)"></i>Entrata</button>
+      <button id="btnTr" onclick="setFType('transfer')" class="flex-1 py-2.5 text-sm font-bold rounded-xl transition-all" style="color:var(--t2)"><i data-lucide="arrow-right-left" class="w-3 h-3 inline mr-1" style="color:var(--wn)"></i>Giro</button>
+    </div>
+    <form id="addF" onsubmit="saveTx(event)" class="space-y-3">
+      <!-- amount -->
+      <div class="rounded-2xl p-5 text-center" style="background:var(--bg2)">
+        <input type="number" id="txAmt" step="0.01" min="0.01" class="w-full bg-transparent text-center text-5xl font-black outline-none" style="color:var(--t);font-variant-numeric:tabular-nums;letter-spacing:-.02em" placeholder="0,00" required>
+        <div class="flex justify-center gap-2 mt-3 flex-wrap">
+          <button type="button" class="qa" onclick="qadd(5)">+5</button>
+          <button type="button" class="qa" onclick="qadd(10)">+10</button>
+          <button type="button" class="qa" onclick="qadd(20)">+20</button>
+          <button type="button" class="qa" onclick="qadd(50)">+50</button>
+          <button type="button" class="qa" onclick="qadd(100)">+100</button>
+          <button type="button" class="qa" onclick="qadd(500)">+500</button>
+        </div>
+      </div>
+      <!-- account (expense/income) -->
+      <div id="accRow" class="rounded-xl p-3" style="background:var(--bg2);border:1.5px solid rgba(0,102,255,.2)">
+        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--br)">Conto</label>
+        <div class="acc-selector" id="accPickWrap"></div>
+        <select id="txAcc" class="hidden"></select>
+      </div>
+      <!-- transfer: from → to -->
+      <div id="transferRow" class="hidden rounded-xl p-4 space-y-3" style="background:var(--bg2);border:1.5px solid rgba(255,149,0,.25)">
+        <div class="flex items-center gap-3">
+          <div class="flex-1">
+            <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--wn)">Da conto</label>
+            <div class="acc-selector" id="accFromWrap"></div>
+            <select id="txAccFrom" class="hidden"></select>
+          </div>
+          <div class="flex flex-col items-center pt-4">
+            <i data-lucide="arrow-right" class="w-5 h-5 arr-pulse" style="color:var(--wn)"></i>
+          </div>
+          <div class="flex-1">
+            <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--wn)">A conto</label>
+            <div class="acc-selector" id="accToWrap"></div>
+            <select id="txAccTo" class="hidden"></select>
+          </div>
+        </div>
+        <p class="text-[10px] font-medium" style="color:var(--t2)">💡 Il patrimonio totale non cambia — i soldi si spostano tra i tuoi conti.</p>
+      </div>
+      <!-- date + cat -->
+      <div class="grid grid-cols-2 gap-3">
+        <div>
+          <div class="flex justify-between items-center mb-1.5">
+            <label class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Data</label>
+            <div class="flex gap-1">
+              <button type="button" onclick="setqd(0)" class="text-[10px] font-bold px-1.5 py-0.5 rounded-md" style="background:var(--bg2);color:var(--t2)">Oggi</button>
+              <button type="button" onclick="setqd(-1)" class="text-[10px] font-bold px-1.5 py-0.5 rounded-md" style="background:var(--bg2);color:var(--t2)">Ieri</button>
+            </div>
+          </div>
+          <input type="date" id="txDate" class="inp" required>
+          <div class="mt-2">
+            <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Ora</label>
+            <input type="time" id="txTime" class="inp" step="60">
+          </div>
+        </div>
+        <div id="catRow">
+          <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Categoria</label>
+          <div class="cat-pick-wrap" id="catPickWrap"></div>
+          <select id="txCat" class="hidden"></select>
+        </div>
+      </div>
+      <!-- desc -->
+      <div>
+        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Nota</label>
+        <input type="text" id="txDesc" class="inp" placeholder="Es. Spesa supermercato..." oninput="autocat()">
+      </div>
+      <!-- tags (hidden for transfer) -->
+      <div id="tagsRow">
+        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Tag</label>
+        <div class="flex flex-wrap gap-2" id="tagRow">
+          <button type="button" class="tbtn" data-tag="necessario" onclick="toggleTag(this)">Necessario</button>
+          <button type="button" class="tbtn" data-tag="svago" onclick="toggleTag(this)">Svago</button>
+          <button type="button" class="tbtn" data-tag="lavoro" onclick="toggleTag(this)">Lavoro</button>
+          <button type="button" class="tbtn" data-tag="ricorrente" onclick="toggleTag(this)">Ricorrente</button>
+          <button type="button" class="tbtn" data-tag="imprevisto" onclick="toggleTag(this)">Imprevisto</button>
+        </div>
+      </div>
+      <button type="submit" id="saveBtn" class="gbtn w-full py-4 rounded-2xl flex justify-center items-center gap-2 text-base">
+        <i data-lucide="check" class="w-5 h-5"></i><span id="saveLbl">Salva Movimento</span>
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ===== MODAL: CALCULATOR ===== -->
+<div id="calcM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:72vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">Calcolatrice</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="px-5 pb-4">
+    <div class="rounded-2xl p-4 mb-3 text-right" style="background:var(--bg2)">
+      <div id="calcExpr" class="text-sm min-h-[1.2em] mb-0.5" style="color:var(--t2)"></div>
+      <div id="calcDisp" class="text-4xl font-black" style="font-variant-numeric:tabular-nums;color:var(--t)">0</div>
+    </div>
+    <div id="calcGrid" class="grid grid-cols-4 gap-2"></div>
+    <button onclick="calcToTx()" class="gbtn w-full py-3 rounded-2xl mt-3 text-sm">Usa come Importo</button>
+  </div>
+</div>
+
+<!-- ===== MODAL: BUDGET ===== -->
+<div id="budM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:82vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">Budget Mensile</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-5 ns">
+    <p class="text-sm mb-4" style="color:var(--t2)">Imposta un limite di spesa per ogni categoria.</p>
+    <div id="budList" class="space-y-3"></div>
+    <button onclick="saveBudgets()" class="gbtn w-full py-3.5 rounded-2xl mt-5 text-sm">Salva Budget</button>
+  </div>
+</div>
+
+<!-- ===== MODAL: IMPORT ===== -->
+<div id="impM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:92vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">Importa Dati</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-5 ns">
+    <!-- Step 1: choose format -->
+    <div id="impStep1">
+      <p class="text-sm mb-4" style="color:var(--t2)">Scegli il formato da importare:</p>
+      <div class="grid grid-cols-2 gap-3 mb-5">
+        <button onclick="selectImpFmt('csv')" id="fmtCSV" class="p-4 rounded-2xl border-2 flex flex-col items-center gap-2 transition-all" style="border-color:var(--bo);background:var(--card)">
+          <span class="text-2xl">📊</span>
+          <span class="font-bold text-sm">CSV</span>
+          <span class="text-[10px] text-center" style="color:var(--t2)">Money Pro X, banche, qualsiasi CSV</span>
+        </button>
+        <button onclick="selectImpFmt('json')" id="fmtJSON" class="p-4 rounded-2xl border-2 flex flex-col items-center gap-2 transition-all" style="border-color:var(--bo);background:var(--card)">
+          <span class="text-2xl">🗄️</span>
+          <span class="font-bold text-sm">JSON</span>
+          <span class="text-[10px] text-center" style="color:var(--t2)">Backup completo Money Pro X</span>
+        </button>
+      </div>
+      <!-- CSV format info -->
+      <div id="csvInfo" class="hidden mb-4">
+        <div class="rounded-xl p-3 mb-3" style="background:var(--bg2)">
+          <p class="text-[10px] font-bold uppercase tracking-wider mb-2" style="color:var(--br)">Formato CSV riconosciuto</p>
+          <p class="text-xs font-mono" style="color:var(--t2)">Data, Ora, Tipo, Importo, Categoria, Conto, Nota</p>
+          <p class="text-xs font-mono" style="color:var(--t2)">2024-01-15, 14:25, expense, 45.50, food, Principale, Spesa</p>
+          <p class="text-xs mt-2" style="color:var(--t2)">• Tipo: <b>expense</b> / <b>income</b> / <b>transfer</b></p>
+          <p class="text-xs" style="color:var(--t2)">• Data: YYYY-MM-DD (o DD/MM/YYYY)</p>
+          <p class="text-xs" style="color:var(--t2)">• Anche CSV generici senza intestazione (colonna importo auto-rilevata)</p>
+        </div>
+      </div>
+      <!-- Drop zone -->
+      <div id="dropZ" class="dropzone hidden" onclick="document.getElementById('fileIn').click()" ondragover="dragOver(event)" ondragleave="dragLeave(event)" ondrop="dropFile(event)">
+        <i data-lucide="upload-cloud" class="w-10 h-10 mx-auto mb-3" style="color:var(--br)"></i>
+        <p class="font-bold text-sm mb-1">Trascina il file qui</p>
+        <p class="text-xs" style="color:var(--t2)">oppure clicca per scegliere</p>
+        <input type="file" id="fileIn" class="hidden" accept=".csv,.json,.txt" onchange="handleFile(this.files[0])">
+      </div>
+      <!-- Paste CSV -->
+      <div id="pasteArea" class="hidden mt-3">
+        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Oppure incolla il testo CSV</label>
+        <textarea id="csvPaste" class="inp text-xs font-mono" rows="5" placeholder="Data,Ora,Tipo,Importo,Categoria,Conto,Nota&#10;2024-01-15,14:25,expense,45.50,food,Principale,Spesa al super..."></textarea>
+        <button onclick="parseFromPaste()" class="gbtn w-full py-3 rounded-xl mt-2 text-sm">Analizza testo</button>
+      </div>
+    </div>
+
+    <!-- Step 2: preview & mapping -->
+    <div id="impStep2" class="hidden">
+      <div class="flex items-center justify-between mb-3">
+        <div>
+          <p class="font-bold text-sm" id="impTitle">Anteprima importazione</p>
+          <p id="impSubtitle" class="text-xs mt-0.5" style="color:var(--t2)"></p>
+        </div>
+        <button onclick="resetImport()" class="text-xs font-bold px-3 py-1.5 rounded-xl" style="background:var(--bg2);color:var(--t2)">← Ricomincia</button>
+      </div>
+
+      <!-- column mapping (CSV only) -->
+      <div id="colMap" class="hidden card p-4 mb-4 space-y-2">
+        <p class="text-[10px] font-bold uppercase tracking-wider mb-2" style="color:var(--br)">Mappatura colonne CSV</p>
+        <div class="grid grid-cols-2 gap-2">
+          <div><label class="text-[9px] font-bold uppercase block mb-1" style="color:var(--t2)">Data</label><select id="mapDate" class="inp text-xs py-1.5"></select></div>
+          <div><label class="text-[9px] font-bold uppercase block mb-1" style="color:var(--t2)">Ora (opz.)</label><select id="mapTime" class="inp text-xs py-1.5"></select></div>
+          <div><label class="text-[9px] font-bold uppercase block mb-1" style="color:var(--t2)">Importo</label><select id="mapAmt" class="inp text-xs py-1.5"></select></div>
+          <div><label class="text-[9px] font-bold uppercase block mb-1" style="color:var(--t2)">Tipo (opz.)</label><select id="mapType" class="inp text-xs py-1.5"></select></div>
+          <div><label class="text-[9px] font-bold uppercase block mb-1" style="color:var(--t2)">Descrizione (opz.)</label><select id="mapDesc" class="inp text-xs py-1.5"></select></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2 mt-2">
+          <div><label class="text-[9px] font-bold uppercase block mb-1" style="color:var(--t2)">Conto default</label><select id="mapAccDef" class="inp text-xs py-1.5"></select></div>
+          <div><label class="text-[9px] font-bold uppercase block mb-1" style="color:var(--t2)">Tipo default</label>
+            <select id="mapTypeDef" class="inp text-xs py-1.5"><option value="expense">Uscita</option><option value="income">Entrata</option></select>
+          </div>
+        </div>
+        <button onclick="remapPreview()" class="text-xs font-bold px-3 py-1.5 rounded-xl" style="background:rgba(0,102,255,.1);color:var(--br)">Applica mappatura</button>
+      </div>
+
+      <!-- stats bar -->
+      <div class="flex gap-3 mb-4">
+        <div class="flex-1 rounded-xl p-3 text-center" style="background:rgba(0,200,150,.1)">
+          <p id="impOkCnt" class="text-xl font-black" style="color:var(--ok);font-variant-numeric:tabular-nums">0</p>
+          <p class="text-[9px] font-bold uppercase" style="color:var(--ok)">Validi</p>
+        </div>
+        <div class="flex-1 rounded-xl p-3 text-center" style="background:rgba(255,59,92,.1)">
+          <p id="impErrCnt" class="text-xl font-black" style="color:var(--bd);font-variant-numeric:tabular-nums">0</p>
+          <p class="text-[9px] font-bold uppercase" style="color:var(--bd)">Errori</p>
+        </div>
+        <div class="flex-1 rounded-xl p-3 text-center" style="background:var(--bg2)">
+          <p id="impDupCnt" class="text-xl font-black" style="color:var(--wn);font-variant-numeric:tabular-nums">0</p>
+          <p class="text-[9px] font-bold uppercase" style="color:var(--wn)">Duplicati</p>
+        </div>
+      </div>
+
+      <!-- options -->
+      <div class="card p-3 mb-4 flex items-center justify-between">
+        <span class="text-xs font-bold">Salta duplicati</span>
+        <label class="tog"><input type="checkbox" id="skipDups" checked><span class="tog-sl"></span></label>
+      </div>
+
+      <!-- preview table -->
+      <div class="overflow-x-auto ns mb-4 rounded-xl" style="border:1px solid var(--bo)">
+        <table class="ptbl" id="prevTbl">
+          <thead><tr><th>Data</th><th>Ora</th><th>Tipo</th><th>Importo</th><th>Categoria</th><th>Conto</th><th>Nota</th><th></th></tr></thead>
+          <tbody id="prevBody"></tbody>
+        </table>
+      </div>
+
+      <button onclick="confirmImport()" id="impConfBtn" class="gbtn w-full py-4 rounded-2xl flex justify-center items-center gap-2 text-base">
+        <i data-lucide="upload" class="w-5 h-5"></i><span id="impConfLbl">Importa 0 movimenti</span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== MODAL: INSIGHTS DEEP ===== -->
+<div id="insM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:82vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">Tutti gli Insight</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-5 ns" id="insDeep"></div>
+</div>
+
+<!-- ===== MAIN ===== -->
+<div class="flex-1 overflow-y-auto ns main-scroll" id="scroll" style="padding-top:max(env(safe-area-inset-top),64px);padding-bottom:calc(80px + env(safe-area-inset-bottom))">
+<div class="px-4">
+
+<!-- ████ HOME ████ -->
+<div id="page-home" class="page on">
+  <div class="flex justify-between items-center">
+    <div>
+      <p id="dateLbl" class="text-xs font-medium capitalize" style="color:var(--t2)"></p>
+      <h1 id="greet" class="text-2xl font-bold">Ciao 👋</h1>
+    </div>
+    <div class="flex items-center gap-1.5">
+      <button onclick="changeMonth(-1)" class="p-1.5 rounded-xl" style="background:var(--bg2)"><i data-lucide="chevron-left" class="w-4 h-4"></i></button>
+      <span id="monthLbl" class="text-xs font-bold capitalize px-2 min-w-[90px] text-center" style="color:var(--br)"></span>
+      <button onclick="changeMonth(1)" class="p-1.5 rounded-xl" style="background:var(--bg2)"><i data-lucide="chevron-right" class="w-4 h-4"></i></button>
+    </div>
+  </div>
+
+  <!-- HERO -->
+  <div id="homeBlocks" class="space-y-4 mt-4" data-zone="home">
+  <div class="card hero p-5 relative" data-block="home-hero" data-label="Hero" style="min-height:min(220px,48vw)">
+    <div class="absolute rounded-full pointer-events-none" style="width:220px;height:220px;right:-60px;top:-60px;background:radial-gradient(circle,rgba(0,102,255,.28),transparent 70%);animation:breathe 4s ease-in-out infinite"></div>
+    <div class="absolute rounded-full pointer-events-none" style="width:160px;height:160px;left:-40px;bottom:-40px;background:radial-gradient(circle,rgba(124,58,237,.2),transparent 70%);animation:breathe 5.5s ease-in-out infinite 1.5s"></div>
+    <p class="text-[9px] font-bold uppercase tracking-widest text-gray-400 mb-1 relative z-10">Patrimonio Netto</p>
+    <h2 id="uiBal" class="text-4xl font-black text-white tracking-tighter mb-1 relative z-10" style="font-size:clamp(1.8rem,8vw,2.8rem);font-variant-numeric:tabular-nums;letter-spacing:-.02em">€ 0,00</h2>
+    <div class="flex items-center gap-2 mb-5 relative z-10">
+      <span id="trendP" class="tp" style="background:rgba(0,200,150,.18);color:var(--ok)">+0.0%</span>
+      <span class="text-xs text-gray-400">vs mese scorso</span>
+      <canvas id="sparkC" width="64" height="22" class="ml-1"></canvas>
+    </div>
+    <div class="relative z-10 flex justify-between border-t pt-4" style="border-color:rgba(255,255,255,.1)">
+      <div><p class="text-[9px] font-bold uppercase text-gray-400 flex items-center gap-1 mb-1"><i data-lucide="trending-up" class="w-3 h-3 text-green-400"></i>Entrate</p><p id="uiIn" class="text-lg font-black text-white" style="font-variant-numeric:tabular-nums">0,00</p></div>
+      <div class="text-center"><p class="text-[9px] font-bold uppercase text-gray-400 mb-1">Risparmio</p><p id="uiSav" class="text-lg font-black" style="color:var(--ok);font-variant-numeric:tabular-nums">0%</p></div>
+      <div class="text-right"><p class="text-[9px] font-bold uppercase text-gray-400 flex items-center gap-1 justify-end mb-1"><i data-lucide="trending-down" class="w-3 h-3 text-red-400"></i>Uscite</p><p id="uiOut" class="text-lg font-black text-white" style="font-variant-numeric:tabular-nums">0,00</p></div>
+    </div>
+  </div>
+
+  <!-- QUICK ACTIONS -->
+  <div class="card p-5" data-block="home-quick" data-label="Azioni rapide">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="font-bold" style="font-size:.95rem">Azioni rapide</h3>
+      <button onclick="openCommand()" class="text-xs font-bold" style="color:var(--br)">Comandi →</button>
+    </div>
+    <div id="quickActGrid" class="grid grid-cols-4 gap-2"></div>
+  </div>
+
+  <!-- MINI WIDGETS -->
+  <div class="grid grid-cols-2 gap-2" data-block="home-mini" data-label="Mini widgets">
+    <div class="card p-4">
+      <div class="flex justify-between items-center mb-2">
+        <p class="text-[9px] font-bold uppercase tracking-widest" style="color:var(--t2)">Debiti</p>
+        <button onclick="openDebts()" class="text-[10px] font-bold" style="color:var(--br)">Apri</button>
+      </div>
+      <div id="debtsMini"></div>
+    </div>
+    <div class="card p-4">
+      <div class="flex justify-between items-center mb-2">
+        <p class="text-[9px] font-bold uppercase tracking-widest" style="color:var(--t2)">Abbonamenti</p>
+        <button onclick="openSubs()" class="text-[10px] font-bold" style="color:var(--br)">Apri</button>
+      </div>
+      <div id="subsMini"></div>
+    </div>
+  </div>
+
+  <!-- QUICK STATS -->
+  <div class="grid grid-cols-3 gap-2" data-block="home-qstats" data-label="Quick stats">
+    <div class="sch text-center"><p class="text-[9px] font-bold uppercase tracking-wider mb-1" style="color:var(--t2)">Media/gg</p><p id="sAvg" class="text-sm font-black" style="font-variant-numeric:tabular-nums">—</p></div>
+    <div class="sch text-center"><p class="text-[9px] font-bold uppercase tracking-wider mb-1" style="color:var(--t2)">Spesa max</p><p id="sMax" class="text-sm font-black" style="font-variant-numeric:tabular-nums">—</p></div>
+    <div class="sch text-center"><p class="text-[9px] font-bold uppercase tracking-wider mb-1" style="color:var(--t2)"># Movimenti</p><p id="sNum" class="text-sm font-black" style="font-variant-numeric:tabular-nums">0</p></div>
+  </div>
+
+  <!-- HEALTH SCORE -->
+  <div class="card p-5" data-block="home-health" data-label="Health score">
+    <div class="flex justify-between items-start mb-3">
+      <div>
+        <p class="text-[10px] font-bold uppercase tracking-wider mb-1" style="color:var(--t2)">Financial Health Score</p>
+        <div class="flex items-baseline gap-2">
+          <span id="hScore" class="text-4xl font-black gt" style="font-variant-numeric:tabular-nums">—</span>
+          <span id="hGrade" class="text-2xl font-black" style="color:var(--br)">—</span>
+        </div>
+        <p id="hLvl" class="text-xs mt-0.5" style="color:var(--t2)">In attesa di dati...</p>
+      </div>
+      <div style="position:relative;width:78px;height:78px">
+        <svg class="ring" width="78" height="78" viewBox="0 0 78 78">
+          <circle stroke="var(--bg2)" stroke-width="7" cx="39" cy="39" r="30"></circle>
+          <circle id="hRing" stroke="var(--br)" stroke-width="7" cx="39" cy="39" r="30" stroke-dasharray="188" stroke-dashoffset="188" transform="rotate(-90 39 39)" style="transition:stroke-dashoffset 1.4s cubic-bezier(.25,1,.5,1)"></circle>
+        </svg>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center"><i data-lucide="heart-pulse" class="w-5 h-5" style="color:var(--br)"></i></div>
+      </div>
+    </div>
+    <div id="hMsg" class="text-xs rounded-xl p-3" style="background:var(--bg2);color:var(--t2)">Aggiungi movimenti per il punteggio...</div>
+  </div>
+
+  <!-- INSIGHTS -->
+  <div data-block="home-insights" data-label="Insight">
+    <div class="flex justify-between items-center mb-3">
+      <h3 class="font-bold flex items-center gap-2" style="font-size:.95rem"><i data-lucide="zap" class="w-4 h-4" style="color:var(--wn)"></i>Insight</h3>
+      <button onclick="openInsM()" class="text-xs font-bold" style="color:var(--br)">Tutti →</button>
+    </div>
+    <div id="insList" class="space-y-2"></div>
+  </div>
+
+  <!-- GOAL -->
+  <div id="goalBox" class="card p-5 hidden" data-block="home-goal" data-label="Obiettivo" style="border:1.5px solid rgba(0,102,255,.2)">
+    <div class="flex justify-between items-center mb-3">
+      <div class="flex items-center gap-2">
+        <div class="p-2 rounded-xl" style="background:rgba(0,102,255,.1)"><i data-lucide="target" class="w-4 h-4" style="color:var(--br)"></i></div>
+        <span id="gName" class="font-bold text-sm">Obiettivo</span>
+      </div>
+      <span id="gPct" class="text-sm font-black" style="color:var(--br)">0%</span>
+    </div>
+    <div class="w-full h-2.5 rounded-full overflow-hidden mb-2" style="background:var(--bg2)">
+      <div id="gBar" class="h-full rounded-full" style="width:0%;background:linear-gradient(90deg,var(--br),var(--acc));transition:width 1.2s cubic-bezier(.25,1,.5,1)"></div>
+    </div>
+    <p id="gAmt" class="text-xs" style="color:var(--t2)">0 / 0</p>
+  </div>
+
+  <!-- BUDGET MINI -->
+  <div class="card p-5" data-block="home-budget" data-label="Budget mensile">
+    <div class="flex justify-between items-center mb-4">
+      <h3 class="font-bold" style="font-size:.95rem">Budget Mensile</h3>
+      <button onclick="openBudM()" class="text-xs font-bold px-3 py-1.5 rounded-xl" style="background:rgba(0,102,255,.1);color:var(--br)">Imposta</button>
+    </div>
+    <div id="budMini" class="space-y-3"></div>
+  </div>
+
+  <!-- FORECAST -->
+  <div id="forecastBox" class="card p-5 hidden" data-block="home-forecast" data-label="Proiezione fine mese">
+    <p class="text-[10px] font-bold uppercase tracking-wider mb-3" style="color:var(--t2)">Proiezione Fine Mese</p>
+    <div class="flex items-center gap-5">
+      <div>
+        <p class="text-xs mb-1" style="color:var(--t2)">Spesa prevista</p>
+        <p id="foreAmt" class="text-2xl font-black" style="font-variant-numeric:tabular-nums">—</p>
+        <p id="foreNote" class="text-[10px] mt-1" style="color:var(--t2)"></p>
+      </div>
+      <div style="position:relative;width:76px;height:76px;margin-left:auto">
+        <svg width="76" height="76" viewBox="0 0 76 76">
+          <circle fill="none" stroke="var(--bg2)" stroke-width="7" cx="38" cy="38" r="28"></circle>
+          <circle id="foreRing" fill="none" stroke="var(--br)" stroke-width="7" cx="38" cy="38" r="28" stroke-linecap="round" stroke-dasharray="176" stroke-dashoffset="176" transform="rotate(-90 38 38)" class="fring"></circle>
+        </svg>
+        <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center"><p id="forePct" class="text-[10px] font-black" style="color:var(--br)">0%</p></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RECENT TX -->
+  <div data-block="home-recent" data-label="Ultimi movimenti">
+    <div class="flex justify-between items-center mb-3">
+      <h3 class="font-bold" style="font-size:.95rem">Ultimi Movimenti</h3>
+      <button onclick="switchTab('wallets',document.querySelectorAll('.ni')[1])" class="text-xs font-bold" style="color:var(--br)">Tutti →</button>
+    </div>
+    <div class="card p-2" id="recentList"></div>
+  </div>
+  </div><!-- /homeBlocks -->
+</div><!-- /home -->
+
+<!-- ████ CONTI ████ -->
+<div id="page-wallets" class="page space-y-4" style="padding-bottom:calc(72px + max(env(safe-area-inset-bottom),10px))">
+  <h1 class="text-2xl font-bold">Conti</h1>
+  <div class="flex gap-3 overflow-x-auto ns -mx-4 px-4 pb-1" id="wDash"></div>
+
+  <!-- search + adv filter -->
+  <div class="flex gap-2">
+    <div class="relative flex-1">
+      <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4" style="color:var(--t3)"></i>
+      <input type="text" id="sQ" oninput="renderList()" placeholder="Cerca nota, categoria..." class="inp pl-9 text-sm">
+    </div>
+    <button onclick="toggleAdv()" class="px-3 rounded-xl border font-bold text-sm" style="background:var(--card);border-color:var(--bo);color:var(--t2)">
+      <i data-lucide="sliders-horizontal" class="w-4 h-4 inline"></i>
+    </button>
+  </div>
+  <div id="advF" class="card p-4 space-y-3 hidden">
+    <div class="grid grid-cols-2 gap-2">
+      <div><label class="text-[9px] font-bold uppercase tracking-wider mb-1 block" style="color:var(--t2)">Dal</label><input type="date" id="fFrom" class="inp text-sm py-2" oninput="renderList()"></div>
+      <div><label class="text-[9px] font-bold uppercase tracking-wider mb-1 block" style="color:var(--t2)">Al</label><input type="date" id="fTo" class="inp text-sm py-2" oninput="renderList()"></div>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div><label class="text-[9px] font-bold uppercase tracking-wider mb-1 block" style="color:var(--t2)">Min €</label><input type="number" id="fMin" class="inp text-sm py-2" placeholder="0" oninput="renderList()"></div>
+      <div><label class="text-[9px] font-bold uppercase tracking-wider mb-1 block" style="color:var(--t2)">Max €</label><input type="number" id="fMax" class="inp text-sm py-2" placeholder="∞" oninput="renderList()"></div>
+    </div>
+    <div class="flex gap-2">
+      <button onclick="setTF('all')" id="ftA" class="flex-1 py-2 text-xs font-bold rounded-xl" style="background:var(--br);color:#fff">Tutti</button>
+      <button onclick="setTF('expense')" id="ftE" class="flex-1 py-2 text-xs font-bold rounded-xl" style="background:var(--bg2);color:var(--t2)">Uscite</button>
+      <button onclick="setTF('income')" id="ftI" class="flex-1 py-2 text-xs font-bold rounded-xl" style="background:var(--bg2);color:var(--t2)">Entrate</button>
+    </div>
+    <div class="flex gap-2">
+      <select id="fCat" class="inp text-sm py-2" onchange="renderList()">
+        <option value="">Tutte le categorie</option>
+      </select>
+    </div>
+    <button onclick="resetF()" class="text-xs font-bold" style="color:var(--bd)">Azzera filtri</button>
+  </div>
+
+  <div class="flex justify-between items-center">
+    <h3 class="font-bold flex items-center gap-2" style="font-size:.95rem">Storico <span id="txCnt" class="text-[10px] px-2 py-0.5 rounded-full" style="background:var(--bg2);color:var(--t2)"></span></h3>
+    <select id="sortS" onchange="renderList()" class="text-xs font-bold outline-none" style="background:transparent;color:var(--t2)">
+      <option value="date-desc">Recenti</option>
+      <option value="date-asc">Più vecchi</option>
+      <option value="amt-desc">Importo ↓</option>
+      <option value="amt-asc">Importo ↑</option>
+    </select>
+  </div>
+  <div class="card p-2 min-h-[200px]" id="txList"></div>
+</div><!-- /wallets -->
+
+<!-- ████ STATS ████ -->
+<div id="page-stats" class="page" style="padding-bottom:calc(86px + max(env(safe-area-inset-bottom),20px))">
+  <!-- Header & Period Switcher -->
+  <div class="flex justify-between items-end mb-6">
+    <div>
+      <h1 class="text-3xl font-black syne mb-1">Analisi</h1>
+      <p class="text-xs font-bold" style="color:var(--t2)">Ottieni una visione chiara delle tue finanze</p>
+    </div>
+    <div class="flex gap-1 p-1 rounded-2xl glass border" style="background:var(--bg2)">
+      <button onclick="setPeriod('month')" id="pm" class="ptab on">Mese</button>
+      <button onclick="setPeriod('quarter')" id="pq" class="ptab">3M</button>
+      <button onclick="setPeriod('year')" id="py" class="ptab">Anno</button>
+    </div>
+  </div>
+
+  <div id="statsBlocks" class="space-y-6" data-zone="stats">
+    
+    <!-- PREMIUM HERO CARD -->
+    <div class="card grad-hero p-5 sm:p-6 relative overflow-hidden group shadow-2xl" style="border:none; min-height:160px">
+      <div class="absolute top-0 right-0 w-64 h-64 bg-white/10 rounded-full -mr-20 -mt-20 blur-3xl group-hover:scale-110 transition-transform duration-700"></div>
+      <div class="absolute bottom-0 left-0 w-48 h-48 bg-black/10 rounded-full -ml-10 -mb-10 blur-2xl"></div>
+      
+      <div class="relative z-10 flex flex-col h-full justify-between">
+        <div>
+          <div class="flex justify-between items-start">
+            <p class="text-[10px] font-black uppercase tracking-[0.2em] opacity-80">Riepilogo Periodo</p>
+            <div class="glass px-2 py-1 rounded-lg text-[10px] font-bold"><span id="statPeriodLbl2">Mese In Corso</span></div>
+          </div>
+          <h2 id="heroNet" class="text-4xl font-black mt-2 syne">€ 0,00</h2>
+          <p class="text-xs font-bold opacity-80">Bilancio Netto Totale</p>
+        </div>
+        
+        <div class="mt-6 sm:mt-8 flex items-end justify-between gap-2 overflow-hidden">
+          <div class="flex gap-3 sm:gap-4 flex-wrap">
+            <div>
+              <p class="text-[9px] font-black uppercase tracking-widest opacity-70">Entrate</p>
+              <p id="heroInc" class="text-sm font-bold truncate">€ 0</p>
+            </div>
+            <div class="w-px h-8 bg-white/20 hidden sm:block"></div>
+            <div>
+              <p class="text-[9px] font-black uppercase tracking-widest opacity-70">Uscite</p>
+              <p id="heroExp" class="text-sm font-bold truncate">€ 0</p>
+            </div>
+          </div>
+          
+          <div class="text-right flex-shrink-0">
+            <div id="srRingContainer" class="relative inline-flex items-center justify-center">
+              <svg width="48" height="48" viewBox="0 0 56 56" class="drop-shadow-lg sm:w-14 sm:h-14">
+                <circle stroke="rgba(255,255,255,0.2)" stroke-width="5" cx="28" cy="28" r="23" fill="none"></circle>
+                <circle id="srRingHero" stroke="#fff" stroke-width="5" cx="28" cy="28" r="23" fill="none" stroke-dasharray="144" stroke-dashoffset="144" transform="rotate(-90 28 28)" style="transition:stroke-dashoffset 1.5s cubic-bezier(0.34, 1.56, 0.64, 1); stroke-linecap:round"></circle>
+              </svg>
+              <span id="srPctHero" class="absolute text-[8px] sm:text-[10px] font-black">0%</span>
+            </div>
+            <p class="text-[7px] sm:text-[8px] font-black uppercase mt-1">Savings Rate</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- INSIGHTS STRIP -->
+    <div id="insightStrip" class="flex gap-2 overflow-x-auto ns pb-2 scroll-smooth">
+      <div class="insight-pill whitespace-nowrap"><i data-lucide="zap" class="w-3 h-3 text-yellow-500"></i><span id="ins1">Caricamento insight...</span></div>
+      <div class="insight-pill whitespace-nowrap"><i data-lucide="trending-down" class="w-3 h-3 text-red-500"></i><span id="ins2">Analisi in corso...</span></div>
+    </div>
+
+    <!-- KPI GRID (Sleeker) -->
+    <div class="grid grid-cols-2 gap-3">
+      <div class="card p-4 kpi-card">
+        <div class="flex items-center gap-2 mb-2">
+          <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background:rgba(0,200,150,0.1)"><i data-lucide="calendar" class="w-3.5 h-3.5" style="color:var(--ok)"></i></div>
+          <p class="text-[9px] font-black uppercase tracking-widest" style="color:var(--t2)">Media Giornaliera</p>
+        </div>
+        <p id="statAvgDay" class="text-xl font-black">€0</p>
+        <div id="statAvgTrend" class="tp inline-block mt-1">0% vs prec.</div>
+      </div>
+      
+      <div class="card p-4 kpi-card">
+        <div class="flex items-center gap-2 mb-2">
+          <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background:rgba(255,59,92,0.1)"><i data-lucide="pie-chart" class="w-3.5 h-3.5" style="color:var(--bd)"></i></div>
+          <p class="text-[9px] font-black uppercase tracking-widest" style="color:var(--t2)">Top Categoria</p>
+        </div>
+        <p id="statTopCat" class="text-sm font-black truncate">Nessuna</p>
+        <p id="statTopAmt" class="text-xs font-bold" style="color:var(--t3)">€ 0,00</p>
+      </div>
+
+      <div class="card p-4 kpi-card col-span-2 flex items-center justify-between">
+        <div class="flex items-center gap-2">
+          <div class="w-7 h-7 rounded-lg flex items-center justify-center" style="background:var(--bg2)"><i data-lucide="list" class="w-3.5 h-3.5" style="color:var(--t2)"></i></div>
+          <p class="text-[9px] font-black uppercase tracking-widest" style="color:var(--t2)">Totale Movimenti</p>
+        </div>
+        <p id="statTxCount" class="text-xl font-black syne">0</p>
+      </div>
+    </div>
+
+    <!-- MAIN TREND: Balance -->
+    <div class="card p-5">
+      <div class="flex justify-between items-center mb-6">
+        <div>
+          <h3 class="text-sm font-black">Andamento Saldo</h3>
+          <p class="text-[10px] font-bold" style="color:var(--t2)">Evoluzione patrimonio nel periodo</p>
+        </div>
+        <i data-lucide="activity" class="w-4 h-4" style="color:var(--t3)"></i>
+      </div>
+      <div class="h-[220px] w-full">
+        <canvas id="cLine"></canvas>
+      </div>
+    </div>
+
+    <!-- DISTRIBUTION: Donut + Bars -->
+    <div class="grid grid-cols-1 gap-6">
+      <div class="card p-5">
+        <h3 class="text-sm font-black mb-6">Distribuzione Spese</h3>
+        <div class="flex flex-col sm:flex-row items-center sm:items-start gap-6">
+          <div class="relative w-36 h-36 sm:w-40 sm:h-40 flex-shrink-0">
+            <canvas id="cDonut"></canvas>
+            <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+              <p class="text-[8px] font-black uppercase tracking-tighter" style="color:var(--t3)">Totale</p>
+              <p id="donutTotal" class="text-xs font-black">€0</p>
+            </div>
+          </div>
+          <div id="catBars" class="w-full flex-1 space-y-4"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TEMPORAL ANALAYSIS (Combined Tabs) -->
+    <div class="card overflow-hidden">
+      <div class="flex border-b" style="border-color:var(--bo)">
+        <button onclick="switchTemporal('hour')" id="btnHour" class="flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 border-transparent on" style="color:var(--br); border-color:var(--br)">Per Ora</button>
+        <button onclick="switchTemporal('day')" id="btnDay" class="flex-1 py-3 text-[10px] font-black uppercase tracking-widest transition-all border-b-2 border-transparent" style="color:var(--t2)">Per Giorno</button>
+      </div>
+      <div class="p-5 h-[180px]">
+        <canvas id="cTemporal"></canvas>
+      </div>
+    </div>
+
+    <!-- CALENDAR HEATMAP -->
+    <div class="card p-5">
+      <div class="flex justify-between items-center mb-5">
+        <div>
+          <h3 class="text-sm font-black">Intensità Spesa</h3>
+          <p class="text-[10px] font-bold" style="color:var(--t2)">Mappa di calore delle tue uscite</p>
+        </div>
+        <div class="flex items-center gap-1">
+          <div class="w-2 h-2 rounded-full" style="background:var(--bg2)"></div>
+          <div class="w-2 h-2 rounded-full" style="background:rgba(255,59,92,0.3)"></div>
+          <div class="w-2 h-2 rounded-full" style="background:rgba(255,59,92,0.8)"></div>
+        </div>
+      </div>
+      <div id="heatmap" class="mt-2 flex flex-wrap gap-1 justify-center sm:justify-start"></div>
+      <div class="mt-4 pt-4 border-t flex justify-between items-center" style="border-color:var(--bo)">
+        <p class="text-[9px] font-bold" style="color:var(--t3)">Tocca un giorno per i dettagli</p>
+        <button onclick="openAlerts()" class="text-[10px] font-black text-blue-500 uppercase tracking-widest">Vedi Alert →</button>
+      </div>
+    </div>
+
+    <!-- BOTTOM TREND: 6 months -->
+    <div class="card p-5">
+      <h3 class="text-sm font-black mb-6">Storico 6 Mesi</h3>
+      <div class="h-[180px]">
+        <canvas id="c6m"></canvas>
+      </div>
+    </div>
+
+  </div>
+</div>
+<!-- /stats -->
+
+
+<!-- ████ SETTINGS ████ -->
+<div id="page-settings" class="page space-y-4" style="padding-bottom:calc(72px + max(env(safe-area-inset-bottom),10px))">
+  <h1 class="text-2xl font-bold">Impostazioni</h1>
+
+  <div class="card p-5 space-y-5">
+    <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Preferenze</h3>
+    <div class="flex justify-between items-center">
+      <div class="flex items-center gap-3"><i data-lucide="moon" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Tema Scuro</span></div>
+      <label class="tog"><input type="checkbox" id="darkT" onchange="setDark(this.checked)"><span class="tog-sl"></span></label>
+    </div>
+    <div class="flex justify-between items-center">
+      <div class="flex items-center gap-3"><i data-lucide="coins" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Valuta</span></div>
+      <select id="currS" class="font-bold text-sm outline-none text-right" style="background:transparent;color:var(--br)" onchange="saveSettings()">
+        <option value="€">EUR (€)</option><option value="$">USD ($)</option><option value="£">GBP (£)</option>
+      </select>
+    </div>
+    <div class="flex justify-between items-center">
+      <div class="flex items-center gap-3"><i data-lucide="wallet" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Conto predefinito</span></div>
+      <select id="defWalletS" class="font-bold text-sm outline-none text-right" style="background:transparent;color:var(--br)" onchange="saveSettings()"></select>
+    </div>
+    <div>
+      <div class="flex items-center gap-3 mb-3"><i data-lucide="palette" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Colore Tema</span></div>
+      <div class="flex gap-2 flex-wrap" id="colorPick"></div>
+    </div>
+  </div>
+
+  <div class="card p-5 space-y-4">
+    <div class="flex justify-between items-center">
+      <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Conti & Wallet</h3>
+      <span id="accsDbBadge" class="hidden text-[9px] font-bold px-2 py-0.5 rounded-full" style="background:rgba(0,200,150,.12);color:var(--ok)">☁ DB</span>
+    </div>
+    <div id="wList" class="space-y-2"></div>
+    <!-- Aggiungi conto -->
+    <div class="rounded-2xl p-3 space-y-2" style="background:var(--bg2)">
+      <p class="text-[9px] font-bold uppercase tracking-wider" style="color:var(--t2)">Nuovo conto</p>
+      <div class="flex gap-2">
+        <input type="text" id="nWallet" placeholder="Nome conto..." class="inp py-2 text-sm flex-1">
+        <select id="nWalletType" class="inp py-2 text-xs w-28 flex-shrink-0">
+          <option value="checking">💳 Corrente</option>
+          <option value="savings">🏦 Risparmi</option>
+          <option value="cash">💵 Contanti</option>
+          <option value="credit">💳 Credito</option>
+          <option value="invest">📈 Invest.</option>
+        </select>
+      </div>
+      <div class="flex gap-2 items-center">
+        <input type="number" id="nWalletBal" placeholder="Saldo iniziale €" class="inp py-2 text-sm flex-1" step="0.01">
+        <div id="nWalletColorDot" onclick="cycleAccColor()" title="Cambia colore" style="width:32px;height:32px;border-radius:50%;background:#0066FF;cursor:pointer;flex-shrink:0;border:3px solid rgba(255,255,255,.3)"></div>
+      </div>
+      <!-- Icon Picker -->
+      <div>
+        <p class="text-[9px] font-bold uppercase tracking-wider mb-1.5" style="color:var(--t2)">Icona Conto</p>
+        <div class="icon-pick-grid" id="iconPickGrid"></div>
+        <input type="hidden" id="nWalletIcon" value="credit-card">
+      </div>
+      <button onclick="addWallet()" class="gbtn w-full py-2.5 rounded-xl text-sm font-bold">+ Aggiungi Conto</button>
+    </div>
+    <button onclick="recalcAllBalances()" class="w-full py-2 rounded-xl text-xs font-bold flex justify-center items-center gap-2" style="background:rgba(0,200,150,.08);color:var(--ok)"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Ricalcola Saldi Conti</button>
+  </div>
+
+  <div class="card p-5 space-y-3">
+    <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Obiettivo Risparmio</h3>
+    <input type="text" id="gNameI" placeholder="Es. Auto nuova, Vacanza..." class="inp py-2.5 text-sm" oninput="saveSettings()">
+    <input type="number" id="gValI" placeholder="Importo target €" class="inp py-2.5 text-sm" oninput="saveSettings()">
+  </div>
+
+  <!-- achievements -->
+  <div class="card p-5">
+    <h3 class="text-[10px] font-black uppercase tracking-widest mb-4" style="color:var(--br)">Traguardi</h3>
+    <div id="achList" class="grid grid-cols-4 gap-3"></div>
+  </div>
+
+  <div class="card p-5 space-y-3" style="border-color:rgba(0,200,150,.22)">
+    <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--ok)">Dati & Backup</h3>
+    <button onclick="exportCSV()" class="w-full py-3 rounded-xl font-bold text-sm flex justify-center items-center gap-2" style="background:rgba(0,200,150,.1);color:var(--ok)"><i data-lucide="download" class="w-4 h-4"></i>Esporta CSV</button>
+    <button onclick="exportJSON()" class="w-full py-3 rounded-xl font-bold text-sm flex justify-center items-center gap-2" style="background:rgba(0,200,150,.1);color:var(--ok)"><i data-lucide="package" class="w-4 h-4"></i>Backup JSON</button>
+    <div class="h-px" style="background:var(--bo)"></div>
+    <button onclick="openImpM()" class="w-full py-3 rounded-xl font-bold text-sm flex justify-center items-center gap-2" style="background:rgba(0,102,255,.1);color:var(--br)"><i data-lucide="upload" class="w-4 h-4"></i>Importa CSV / JSON</button>
+    <button onclick="exportCurrentMonthPDF()" class="w-full py-3 rounded-xl font-bold text-sm flex justify-center items-center gap-2" style="background:rgba(0,102,255,.1);color:var(--br)"><i data-lucide="file-text" class="w-4 h-4"></i>Esporta Report Mese</button>
+  </div>
+
+  <div class="card p-5 space-y-3" style="border-color:rgba(0,102,255,.2)">
+    <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">☁️ Supabase Cloud Sync</h3>
+    <div id="sbStatus" class="flex items-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold" style="background:var(--bg2)">
+      <div id="sbDot" class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:#999"></div>
+      <span id="sbTxt" class="flex-1">Non configurato</span>
+      <button onclick="syncNow()" class="text-[9px] font-bold px-2 py-0.5 rounded-lg" style="background:rgba(0,102,255,.15);color:var(--br)">↺ Sync</button>
+    </div>
+    <!-- Schema SQL accordion -->
+    <details class="rounded-xl overflow-hidden" style="border:1px solid var(--bo)">
+      <summary class="flex justify-between items-center p-3 text-xs font-bold cursor-pointer list-none" style="background:var(--bg2);color:var(--t2)">
+        <span>📋 Schema SQL — incolla nel SQL Editor di Supabase</span>
+        <i data-lucide="chevron-down" class="w-3.5 h-3.5 flex-shrink-0"></i>
+      </summary>
+      <div class="p-3 overflow-x-auto" style="background:var(--card2)">
+        <pre id="sqlSchemaEl" class="text-[9px] leading-relaxed whitespace-pre-wrap" style="color:var(--ok);font-family:monospace"></pre>
+        <button onclick="copySQLSchema()" class="mt-2 px-3 py-1.5 rounded-xl text-[10px] font-bold" style="background:rgba(0,102,255,.1);color:var(--br)">📋 Copia Schema</button>
+      </div>
+    </details>
+    <!-- Migrate local → DB -->
+    <button onclick="migrateLocalToDB()" class="w-full py-2.5 rounded-xl text-xs font-bold flex justify-center items-center gap-2" style="background:rgba(0,200,150,.1);color:var(--ok)">
+      <i data-lucide="database" class="w-3.5 h-3.5"></i>Migra dati locali → Database
+    </button>
+    <div>
+      <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Project URL</label>
+      <input type="url" id="sbUrlInp" class="inp text-xs" placeholder="https://abcdefgh.supabase.co" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+    </div>
+    <div>
+      <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Anon/Public Key</label>
+      <input type="text" id="sbKeyInp" class="inp text-xs" placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace">
+    </div>
+    <button id="sbTestBtn" onclick="testSbConnection()" class="w-full py-2.5 rounded-xl text-xs font-bold" style="background:var(--bg2);color:var(--t)">Testa Connessione</button>
+    <button onclick="saveSbCredentials()" class="gbtn w-full py-3 rounded-xl text-sm flex justify-center items-center gap-2">
+      <i data-lucide="cloud" class="w-4 h-4"></i>Salva e Connetti
+    </button>
+    <button onclick="clearSbCredentials()" class="w-full py-2 rounded-xl text-xs font-bold" style="background:var(--bg2);color:var(--t3)">Disconnetti</button>
+  </div>
+
+  <!-- STRUMENTI -->
+  <div class="card p-5 space-y-3">
+    <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Strumenti</h3>
+    <div class="grid grid-cols-2 gap-2">
+      <button onclick="openGoals()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(0,200,150,.1);color:var(--ok)"><i data-lucide="target" class="w-3.5 h-3.5"></i>Obiettivi</button>
+      <button onclick="openDebts()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(255,59,92,.1);color:var(--bd)"><i data-lucide="handshake" class="w-3.5 h-3.5"></i>Debiti</button>
+      <button onclick="openSubs()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(124,58,237,.1);color:var(--acc)"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Abbonamenti</button>
+      <button onclick="openNetworth()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(0,102,255,.1);color:var(--br)"><i data-lucide="trending-up" class="w-3.5 h-3.5"></i>Patrimonio</button>
+      <button onclick="openTemplates()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(0,102,255,.08);color:var(--br)"><i data-lucide="bookmark" class="w-3.5 h-3.5"></i>Template</button>
+      <button onclick="openNotes()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(255,149,0,.1);color:#FF9500"><i data-lucide="sticky-note" class="w-3.5 h-3.5"></i>Note</button>
+      <button onclick="openAlerts()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(255,149,0,.12);color:var(--wn)"><i data-lucide="bell" class="w-3.5 h-3.5"></i>Alert</button>
+      <button onclick="openConv()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(0,102,255,.12);color:var(--br)"><i data-lucide="arrow-left-right" class="w-3.5 h-3.5"></i>Converti</button>
+      <button onclick="openSplit()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(124,58,237,.12);color:var(--acc)"><i data-lucide="divide" class="w-3.5 h-3.5"></i>Split</button>
+      <button onclick="openCommand()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:var(--bg2);color:var(--t2)"><i data-lucide="command" class="w-3.5 h-3.5"></i>Comandi</button>
+      <button onclick="openRecurring()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 col-span-2" style="background:var(--bg2);color:var(--t2)"><i data-lucide="repeat" class="w-3.5 h-3.5"></i>Transazioni Ricorrenti</button>
+    </div>
+    <div class="h-px" style="background:var(--bo)"></div>
+    <div class="flex justify-between items-center">
+      <span class="text-sm font-bold">PIN di Sicurezza</span>
+      <label class="tog"><input type="checkbox" id="pinToggle" onchange="togglePinSetting(this.checked)"><span class="tog-sl"></span></label>
+    </div>
+  </div>
+
+  <div class="card p-5 space-y-3" style="border-color:rgba(255,59,92,.2)">
+    <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--bd)">Danger Zone</h3>
+    <button onclick="wipeAll()" class="w-full py-3 rounded-xl font-bold text-sm" style="background:rgba(255,59,92,.1);color:var(--bd)">Cancella Tutti i Dati</button>
+  </div>
+
+
+  <p class="text-center text-xs pb-4" style="color:var(--t3)">Money Pro X · v2.0 ✨</p>
+</div><!-- /page-settings -->
+
+</div><!-- /px-4 -->
+</div><!-- /scroll -->
+
+<!-- ===== MODAL: DEBITI & CREDITI ===== -->
+<div id="debtsM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">💸 Debiti & Crediti</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
+    <div class="rounded-2xl p-4 space-y-3" style="background:var(--bg2)">
+      <p class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Aggiungi voce</p>
+      <div class="flex gap-2">
+        <button id="debtTypeBorrow" onclick="setDebtType('borrow')" class="flex-1 py-2 rounded-xl text-xs font-bold" style="background:rgba(255,59,92,.12);color:var(--bd)">💸 Mi devono</button>
+        <button id="debtTypeLend" onclick="setDebtType('lend')" class="flex-1 py-2 rounded-xl text-xs font-bold" style="background:rgba(0,200,150,.12);color:var(--ok)">🤲 Devo io</button>
+      </div>
+      <input type="text" id="debtPerson" class="inp text-sm" placeholder="Nome persona">
+      <input type="number" id="debtAmt" class="inp text-sm" placeholder="Importo €" step="0.01" min="0">
+      <input type="text" id="debtNote" class="inp text-sm" placeholder="Nota opzionale...">
+      <button onclick="addDebt()" class="gbtn w-full py-3 rounded-xl text-sm font-bold">Aggiungi</button>
+    </div>
+    <div id="debtsList" class="space-y-2"></div>
+  </div>
+</div>
+
+<!-- ===== MODAL: ABBONAMENTI ===== -->
+<div id="subsM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">🔄 Abbonamenti</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
+    <div class="rounded-2xl p-4 flex justify-between items-center" style="background:linear-gradient(135deg,rgba(124,58,237,.15),rgba(0,102,255,.15));border:1px solid rgba(124,58,237,.2)">
+      <div>
+        <p class="text-[9px] font-bold uppercase tracking-wider mb-1" style="color:var(--acc)">Totale mensile</p>
+        <p id="subsTotalMo" class="text-2xl font-black" style="color:var(--acc)">€ 0,00</p>
+      </div>
+      <div class="text-right">
+        <p class="text-[9px] font-bold uppercase tracking-wider mb-1" style="color:var(--t2)">Annuale</p>
+        <p id="subsTotalYr" class="text-lg font-black" style="color:var(--t2)">€ 0,00</p>
+      </div>
+    </div>
+    <div class="rounded-2xl p-4 space-y-3" style="background:var(--bg2)">
+      <p class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Nuovo abbonamento</p>
+      <input type="text" id="subName" class="inp text-sm" placeholder="Es. Netflix, Spotify...">
+      <div class="grid grid-cols-2 gap-2">
+        <input type="number" id="subAmt" class="inp text-sm" placeholder="Importo €" step="0.01" min="0">
+        <select id="subFreq" class="inp text-sm">
+          <option value="monthly">Mensile</option>
+          <option value="yearly">Annuale</option>
+          <option value="weekly">Settimanale</option>
+        </select>
+      </div>
+      <input type="date" id="subNextDate" class="inp text-sm">
+      <button onclick="addSubscription()" class="gbtn w-full py-3 rounded-xl text-sm font-bold">Aggiungi</button>
+    </div>
+    <div id="subsList" class="space-y-2"></div>
+  </div>
+</div>
+
+<!-- ===== MODAL: PATRIMONIO NEL TEMPO ===== -->
+<div id="networthM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">📈 Patrimonio nel Tempo</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns">
+    <canvas id="networthChart" style="max-height:280px" class="mt-2"></canvas>
+    <div id="networthStats" class="grid grid-cols-3 gap-2 mt-4"></div>
+  </div>
+</div>
+
+<!-- ===== MODAL: OBIETTIVI ===== -->
+<div id="goalsM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">🎯 Obiettivi</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
+    <div class="rounded-2xl p-4 space-y-3" style="background:var(--bg2)">
+      <p class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Nuovo obiettivo</p>
+      <input type="text" id="goalNameI" class="inp text-sm" placeholder="Es. Auto, Vacanza, Emergenza...">
+      <div class="grid grid-cols-2 gap-2">
+        <input type="number" id="goalTargetI" class="inp text-sm" placeholder="Target €" step="1" min="0">
+        <input type="number" id="goalCurrentI" class="inp text-sm" placeholder="Già risparmiato €" step="1" min="0">
+      </div>
+      <input type="date" id="goalDeadlineI" class="inp text-sm">
+      <button onclick="addGoal()" class="gbtn w-full py-3 rounded-xl text-sm font-bold">Aggiungi Obiettivo</button>
+    </div>
+    <div id="goalsList" class="space-y-3"></div>
+  </div>
+</div>
+
+<!-- ===== MODAL: TEMPLATE ===== -->
+<div id="tplM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:85vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">📋 Template Rapidi</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns">
+    <p class="text-xs mb-3" style="color:var(--t2)">Salva transazioni frequenti come template da riutilizzare rapidamente.</p>
+    <div id="tplList" class="space-y-1 divide-y" style="border-color:var(--bo)"></div>
+  </div>
+</div>
+
+<!-- ===== MODAL: NOTE ===== -->
+<div id="notesM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:85vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">📝 Note</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-3">
+    <div class="flex gap-2">
+      <input type="text" id="noteInp" class="inp text-sm flex-1" placeholder="Scrivi una nota..." onkeydown="if(event.key==='Enter')addNote()">
+      <button onclick="addNote()" class="gbtn px-4 rounded-xl text-sm font-bold">+</button>
+    </div>
+    <div id="notesList" class="space-y-2"></div>
+  </div>
+</div>
+
+<!-- ===== MODAL: RICORRENTI ===== -->
+<div id="recM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:85vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center">
+    <h2 class="text-xl font-bold">🔁 Transazioni Ricorrenti</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns">
+    <p class="text-xs mb-3" style="color:var(--t2)">Transazioni con il tag "Ricorrente" — aggiunte automaticamente ogni mese.</p>
+    <div id="recList"></div>
+  </div>
+</div>
+
+<!-- ===== PIN SCREEN ===== -->
+<div id="pinScreen" class="hidden fixed inset-0 flex flex-col items-center justify-center z-[999]" style="background:var(--bg)">
+  <div class="w-full max-w-xs px-8 text-center">
+    <div class="text-4xl mb-2">🔒</div>
+    <h2 class="text-xl font-bold mb-1">Money Pro X</h2>
+    <p class="text-sm mb-6" style="color:var(--t2)">Inserisci il PIN per accedere</p>
+    <div class="flex justify-center gap-3 mb-6">
+      <div id="pinD1" class="w-3.5 h-3.5 rounded-full" style="background:var(--bg2);border:2px solid var(--bo)"></div>
+      <div id="pinD2" class="w-3.5 h-3.5 rounded-full" style="background:var(--bg2);border:2px solid var(--bo)"></div>
+      <div id="pinD3" class="w-3.5 h-3.5 rounded-full" style="background:var(--bg2);border:2px solid var(--bo)"></div>
+      <div id="pinD4" class="w-3.5 h-3.5 rounded-full" style="background:var(--bg2);border:2px solid var(--bo)"></div>
+    </div>
+    <div class="grid grid-cols-3 gap-3 mb-3">
+      <button onclick="pinKey('1')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">1</button>
+      <button onclick="pinKey('2')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">2</button>
+      <button onclick="pinKey('3')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">3</button>
+      <button onclick="pinKey('4')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">4</button>
+      <button onclick="pinKey('5')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">5</button>
+      <button onclick="pinKey('6')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">6</button>
+      <button onclick="pinKey('7')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">7</button>
+      <button onclick="pinKey('8')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">8</button>
+      <button onclick="pinKey('9')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">9</button>
+      <button onclick="pinBack()" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">⌫</button>
+      <button onclick="pinKey('0')" class="py-4 rounded-2xl text-xl font-bold" style="background:var(--card);border:1px solid var(--bo)">0</button>
+      <button id="pinSkip" onclick="unlockApp()" class="py-4 rounded-2xl text-xs font-bold" style="background:var(--card);border:1px solid var(--bo);color:var(--t2)">Salta</button>
+    </div>
+  </div>
+</div>
+
+<!-- BOTTOM NAV -->
+<div class="bnav fixed bottom-0 left-0 right-0 grid grid-cols-5 items-center px-2 pt-1.5 z-40" style="padding-bottom:max(env(safe-area-inset-bottom),10px)">
+  <div class="ni on flex flex-col items-center gap-0.5 cursor-pointer py-1" onclick="switchTab('home',this)"><i data-lucide="layout-dashboard" class="w-5 h-5"></i><span class="text-[9px] font-bold">Home</span></div>
+  <div class="ni flex flex-col items-center gap-0.5 cursor-pointer py-1" onclick="switchTab('wallets',this)"><i data-lucide="wallet" class="w-5 h-5"></i><span class="text-[9px] font-bold">Conti</span></div>
+  <div class="flex justify-center -mt-5">
+    <button onclick="openAdd()" class="w-14 h-14 rounded-full flex items-center justify-center text-white transition-all hover:scale-105 active:scale-95" style="background:var(--br);box-shadow:0 8px 28px rgba(0,102,255,.45);border:4px solid var(--bg)">
+      <i data-lucide="plus" class="w-7 h-7"></i>
+    </button>
+  </div>
+  <div class="ni flex flex-col items-center gap-0.5 cursor-pointer py-1" onclick="switchTab('stats',this)"><i data-lucide="bar-chart-3" class="w-5 h-5"></i><span class="text-[9px] font-bold">Analisi</span></div>
+  <div class="ni flex flex-col items-center gap-0.5 cursor-pointer py-1" onclick="switchTab('settings',this)"><i data-lucide="settings-2" class="w-5 h-5"></i><span class="text-[9px] font-bold">Impost.</span></div>
+</div>
