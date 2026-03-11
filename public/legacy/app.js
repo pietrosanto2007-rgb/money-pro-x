@@ -2224,7 +2224,15 @@ function renderSparkline(year, month){
   if(!canvas) return;
   const dim=new Date(year,month+1,0).getDate();
   const days=Array.from({length:dim},(_,i)=>i+1);
-  let running=0;
+  
+  // Start with total balance before this month
+  const startMonthStr = fmtDate(new Date(year, month, 1));
+  let running = 0;
+  if(CFG._accounts) CFG._accounts.forEach(a => running += +a.initialBalance || 0);
+  S.txs.filter(t => t.date < startMonthStr && t.type !== 'transfer').forEach(t => {
+    running += t.type === 'income' ? +t.amount : -+t.amount;
+  });
+
   const vals=days.map(d=>{
     const day=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     S.txs.filter(t=>t.date===day&&t.type!=='transfer').forEach(t=>running+=t.type==='income'?+t.amount:-+t.amount);
@@ -2232,8 +2240,20 @@ function renderSparkline(year, month){
   });
   if(S.charts.spark) S.charts.spark.destroy();
   const ctx=canvas.getContext('2d');
-  const col=vals[vals.length-1]>=0?'rgba(0,200,150,.8)':'rgba(255,59,92,.8)';
-  S.charts.spark=new Chart(ctx,{type:'line',data:{labels:days,datasets:[{data:vals,borderColor:col,borderWidth:2,pointRadius:0,fill:true,backgroundColor:col.replace('.8','.12'),tension:.4}]},options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{enabled:false}},scales:{x:{display:false},y:{display:false}}}});
+  const pos=vals[vals.length-1]>=0;
+  const col=pos?'rgba(0,200,150,.8)':'rgba(255,59,92,.8)';
+  
+  S.charts.spark=new Chart(ctx,{
+    type:'line',
+    data:{labels:days,datasets:[{data:vals,borderColor:col,borderWidth:2,pointRadius:0,fill:true,backgroundColor:col.replace('.8','.12'),tension:.4}]},
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      animation: { duration: 800 },
+      plugins:{legend:{display:false},tooltip:{enabled:false}},
+      scales:{x:{display:false},y:{display:false}}
+    }
+  });
 }
 
 /* ============================================================
@@ -2555,47 +2575,123 @@ function renderCharts(){
   setEl('statTxCount', winTxs.length);
 
   // ── Chart 1: daily balance (base month) ──
-  const dim=new Date(baseYear,baseMonth+1,0).getDate();
-  const days=Array.from({length:dim},(_,i)=>i+1);
-  let running=0;
-  const balVals=days.map(d=>{
-    const day=`${baseYear}-${String(baseMonth+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    S.txs.filter(t=>t.date===day&&t.type!=='transfer').forEach(t=>running+=t.type==='income'?+t.amount:-+t.amount);
+  const dim = new Date(baseYear, baseMonth + 1, 0).getDate();
+  const days = Array.from({ length: dim }, (_, i) => i + 1);
+  
+  // Start with total balance before this month
+  const startMonthStr = fmtDate(new Date(baseYear, baseMonth, 1));
+  let running = 0;
+  // Initial account balances
+  if(CFG._accounts) CFG._accounts.forEach(a => running += +a.initialBalance || 0);
+  // Transactions before this month
+  S.txs.filter(t => t.date < startMonthStr && t.type !== 'transfer').forEach(t => {
+    running += t.type === 'income' ? +t.amount : -+t.amount;
+  });
+
+  const balVals = days.map(d => {
+    const day = `${baseYear}-${String(baseMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    S.txs.filter(t => t.date === day && t.type !== 'transfer').forEach(t => {
+      running += t.type === 'income' ? +t.amount : -+t.amount;
+    });
     return running;
   });
+
   const ctxLine = document.getElementById('cLine')?.getContext('2d');
   let gradientLine = 'var(--br)';
-  if(ctxLine){
+  if (ctxLine) {
     gradientLine = ctxLine.createLinearGradient(0, 0, 0, 220);
-    gradientLine.addColorStop(0, resolveCol('var(--br)'));
+    gradientLine.addColorStop(0, resolveCol('rgba(0,102,255,0.2)'));
     gradientLine.addColorStop(1, 'rgba(0,102,255,0)');
   }
-  makeChart('cLine','line',{labels:days,datasets:[{label:'Saldo',data:balVals,borderColor:resolveCol('var(--br)'),backgroundColor:gradientLine,fill:true,tension:.4,pointRadius:0,borderWidth:3}]},{scales:{y:{ticks:{callback:v=>fmtShort(v)},grid:{drawBorder:false,color:'rgba(0,0,0,0.03)'}},x:{grid:{display:false}}}});
+  
+  makeChart('cLine', 'line', {
+    labels: days,
+    datasets: [{
+      label: 'Saldo',
+      data: balVals,
+      borderColor: resolveCol('var(--br)'),
+      backgroundColor: gradientLine,
+      fill: true,
+      tension: 0.45,
+      pointRadius: 0,
+      borderWidth: 3,
+      pointHoverRadius: 5,
+      pointHoverBackgroundColor: resolveCol('var(--br)'),
+      pointHoverBorderColor: '#fff',
+      pointHoverBorderWidth: 2
+    }]
+  }, {
+    scales: {
+      y: {
+        ticks: { color: resolveCol('var(--t3)'), font: { size: 10, weight: '600' }, callback: v => fmtShort(v) },
+        grid: { color: resolveCol('rgba(0,0,0,0.03)'), drawBorder: false }
+      },
+      x: {
+        ticks: { color: resolveCol('var(--t3)'), font: { size: 10, weight: '600' } },
+        grid: { display: false }
+      }
+    }
+  });
 
-  // ── Chart 2: 6-month income vs expense (ending at base month) ──
+  // ── Chart 2: 6-month income vs expense ──
   const mLabels = [];
   const mInc = [];
   const mExp = [];
-  for(let i=5; i>=0; i--){
-    const d = new Date(baseYear, baseMonth-i, 1);
-    mLabels.push(d.toLocaleDateString('it-IT',{month:'short'}));
+  for (let i = 5; i >= 0; i--) {
+    const d = new Date(baseYear, baseMonth - i, 1);
+    mLabels.push(d.toLocaleDateString('it-IT', { month: 'short' }));
     const start = fmtDate(new Date(d.getFullYear(), d.getMonth(), 1));
-    const end = fmtDate(new Date(d.getFullYear(), d.getMonth()+1, 0));
-    const mtxs = S.txs.filter(t=>t.type!=='transfer' && t.date>=start && t.date<=end);
-    mInc.push(mtxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0));
-    mExp.push(mtxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0));
+    const end = fmtDate(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+    const mtxs = S.txs.filter(t => t.type !== 'transfer' && t.date >= start && t.date <= end);
+    mInc.push(mtxs.filter(t => t.type === 'income').reduce((s, t) => s + +t.amount, 0));
+    mExp.push(mtxs.filter(t => t.type === 'expense').reduce((s, t) => s + +t.amount, 0));
   }
 
-  makeChart('c6m','bar',{labels:mLabels,datasets:[{label:'Entrate',data:mInc,backgroundColor:resolveCol('var(--ok)'),borderRadius:4,barThickness:12},{label:'Uscite',data:mExp,backgroundColor:resolveCol('var(--bd)'),borderRadius:4,barThickness:12}]},{scales:{y:{ticks:{callback:v=>fmtShort(v)},grid:{display:false}},x:{grid:{display:false}}}});
+  makeChart('c6m', 'bar', {
+    labels: mLabels,
+    datasets: [
+      { label: 'Entrate', data: mInc, backgroundColor: resolveCol('var(--ok)'), borderRadius: 6, barThickness: 10 },
+      { label: 'Uscite', data: mExp, backgroundColor: resolveCol('var(--bd)'), borderRadius: 6, barThickness: 10 }
+    ]
+  }, {
+    interaction: { mode: 'index', intersect: false },
+    scales: {
+      y: { display: false },
+      x: { grid: { display: false }, ticks: { color: resolveCol('var(--t2)'), font: { size: 10, weight: '700' } } }
+    }
+  });
 
   // ── Chart 3: Donut ──
-  const catEntries=Object.entries(catTotals).sort((a,b)=>b[1]-a[1]).slice(0,7);
-  setEl('donutTotal', fmtShort(expTotal));
+  const catEntries = Object.entries(catTotals).sort((a, b) => b[1] - a[1]).slice(0, 7);
+  const donutTotalEl = document.getElementById('donutTotal');
+  if (donutTotalEl) donutTotalEl.textContent = fmtShort(expTotal);
   
-  const ctxDonut = document.getElementById('cDonut')?.getContext('2d');
-  const donutColors = catEntries.map(([k])=>CATS[k]?.col||'#888');
+  const donutColors = catEntries.map(([k]) => CATS[k]?.col || '#888');
 
-  makeChart('cDonut','doughnut',{labels:catEntries.map(([k])=>CATS[k]?.l||k),datasets:[{data:catEntries.map(([,v])=>v),backgroundColor:donutColors,borderWidth:0,hoverOffset:10,weight:0.5}]},{cutout:'70%',plugins:{legend:{display:false},tooltip:{enabled:true,backgroundColor:'rgba(0,0,0,0.8)',padding:12,cornerRadius:12,titleFont:{size:11,weight:'bold'},bodyFont:{size:13,weight:'900'}}}});
+  makeChart('cDonut', 'doughnut', {
+    labels: catEntries.map(([k]) => CATS[k]?.l || k),
+    datasets: [{
+      data: catEntries.map(([, v]) => v),
+      backgroundColor: donutColors,
+      borderWidth: 0,
+      hoverOffset: 12,
+      weight: 0.5
+    }]
+  }, {
+    cutout: '75%',
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        enabled: true,
+        backgroundColor: 'rgba(0,0,0,0.85)',
+        padding: 12,
+        cornerRadius: 12,
+        titleFont: { size: 11, weight: 'bold', family: 'Syne' },
+        bodyFont: { size: 13, weight: '800', family: 'DM Sans' },
+        displayColors: false
+      }
+    }
+  });
 
   // ── Chart 4: Temporal (Hour/Day) ──
   renderTemporalChart();
@@ -2628,31 +2724,65 @@ function renderTemporalChart(){
     const hLabels=Array.from({length:24},(_,i)=>String(i).padStart(2,'0'));
     const hVals=Array(24).fill(0);
     winExp.forEach(t=>{
-      const hh=parseInt((normTime(t.time)||'12:00').split(':')[0],10);
+      const tStr = normTime(t.time) || '12:00';
+      const hh=parseInt(tStr.split(':')[0],10);
       if(Number.isFinite(hh) && hh>=0 && hh<=23) hVals[hh]+= +t.amount;
     });
-    makeChart('cTemporal','bar',{labels:hLabels,datasets:[{label:'Spese',data:hVals,backgroundColor:resolveCol('var(--br)'),borderRadius:4}]},{scales:{y:{display:false},x:{grid:{display:false}}}});
+    makeChart('cTemporal','bar',{
+      labels:hLabels,
+      datasets:[{label:'Spese',data:hVals,backgroundColor:resolveCol('rgba(0,102,255,0.7)'),borderRadius:6, hoverBackgroundColor: resolveCol('var(--br)')}]
+    },{
+      interaction: { intersect: false, mode: 'index' },
+      scales:{y:{display:false},x:{grid:{display:false}, ticks: { color: resolveCol('var(--t3)'), font: { size: 9 } }}}
+    });
   } else {
     const wdLabels=['Dom','Lun','Mar','Mer','Gio','Ven','Sab'];
     const wdVals=Array(7).fill(0);
     winExp.forEach(t=>{ const wd=new Date(t.date+'T12:00').getDay(); wdVals[wd]+= +t.amount; });
-    makeChart('cTemporal','bar',{labels:wdLabels,datasets:[{label:'Spese',data:wdVals,backgroundColor:wdVals.map((_,i)=>i===0||i===6?resolveCol('var(--wn)'):resolveCol('var(--br)')),borderRadius:4}]},{scales:{y:{display:false},x:{grid:{display:false}}}});
+    makeChart('cTemporal','bar',{
+      labels:wdLabels,
+      datasets:[{
+        label:'Spese',
+        data:wdVals,
+        backgroundColor:wdVals.map((_,i)=>i===0||i===6?resolveCol('rgba(255,59,92,0.6)'):resolveCol('rgba(0,102,255,0.6)')),
+        borderRadius:6,
+        hoverBackgroundColor: wdVals.map((_,i)=>i===0||i===6?resolveCol('var(--bd)'):resolveCol('var(--br)'))
+      }]
+    },{
+      interaction: { intersect: false, mode: 'index' },
+      scales:{y:{display:false},x:{grid:{display:false}, ticks: { color: resolveCol('var(--t3)'), font: { size: 10, weight: '700' } }}}
+    });
   }
 }
 function makeChart(id,type,data,extraOpts={}){
   const canvas=document.getElementById(id);
   if(!canvas) return;
   if(S.charts[id]) try{S.charts[id].destroy();}catch(e){}
-  const defaults={responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:i=>' '+fmt(i.raw)}}}};
-  try{
-    if(data.datasets){
-      data.datasets.forEach(ds=>{
-        if(ds.borderColor) ds.borderColor=resolveCol(ds.borderColor);
-        if(ds.backgroundColor) ds.backgroundColor=resolveCol(ds.backgroundColor);
-        if(Array.isArray(ds.backgroundColor)) ds.backgroundColor=ds.backgroundColor.map(c=>resolveCol(c));
+  const defaults = {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: { duration: 1200, easing: 'easeOutQuart' },
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: 'rgba(0,0,0,0.8)',
+        padding: 10,
+        cornerRadius: 8,
+        titleFont: { family: 'Syne', size: 10 },
+        bodyFont: { family: 'DM Sans', size: 12, weight: '700' },
+        callbacks: { label: i => ' ' + fmt(i.raw) }
+      }
+    }
+  };
+  try {
+    if (data.datasets) {
+      data.datasets.forEach(ds => {
+        if (ds.borderColor) ds.borderColor = resolveCol(ds.borderColor);
+        if (ds.backgroundColor) ds.backgroundColor = resolveCol(ds.backgroundColor);
+        if (Array.isArray(ds.backgroundColor)) ds.backgroundColor = ds.backgroundColor.map(c => resolveCol(c));
       });
     }
-    S.charts[id]=new Chart(canvas.getContext('2d'),{type,data,options:Object.assign({},defaults,extraOpts)});
+    S.charts[id] = new Chart(canvas.getContext('2d'), { type, data, options: Object.assign({}, defaults, extraOpts) });
   }catch(e){ console.warn('makeChart error',id,e); }
 }
 function renderHeatmap(year, month){
@@ -2668,11 +2798,15 @@ function renderHeatmap(year, month){
     const val=dayExp[key]||0;
     const intensity=val/maxE;
     const alpha=(intensity*.85+.05).toFixed(2);
+    // Premium color palette for intensity
     const col=val>0?`rgba(255,59,92,${alpha})`:'var(--bg2)';
-    const txtCol=val>0?'#fff':'var(--t2)';
-    return `<button class="hc" title="${key}: ${fmt(val)}" style="background:${col};color:${txtCol}" onclick="openDayDetails('${key}')">${d}</button>`;
+    const txtCol=val>0?(alpha > 0.5 ? '#fff' : 'var(--t)') : 'var(--t2)';
+    const scale = val > 0 ? (1 + intensity * 0.1).toFixed(2) : 1;
+    return `<button class="hc group" title="${key}: ${fmt(val)}" style="background:${col};color:${txtCol};transform:scale(${scale})" onclick="openDayDetails('${key}')">
+      <span class="relative z-10 transition-transform group-active:scale-90">${d}</span>
+    </button>`;
   }).join('');
-  el.innerHTML=`<div class="flex flex-wrap gap-1">${cells}</div>`;
+  el.innerHTML=`<div class="flex flex-wrap gap-1.5 justify-center sm:justify-start pb-2">${cells}</div>`;
 }
 
 function openDayDetails(dateStr){
@@ -3965,9 +4099,14 @@ function renderNetworthChart(){
     return d;
   });
   const labels=months.map(d=>d.toLocaleDateString('it-IT',{month:'short',year:'2-digit'}));
+  
+  // Total initial balance of all accounts
+  let initialBalanceAll = 0;
+  if(CFG._accounts) CFG._accounts.forEach(a => initialBalanceAll += +a.initialBalance || 0);
+
   const netWorthByMonth=months.map(d=>{
     const upTo=new Date(d.getFullYear(),d.getMonth()+1,0);
-    let nw=0;
+    let nw = initialBalanceAll;
     S.txs.forEach(t=>{
       if(new Date(t.date+'T12:00')<=upTo && t.type!=='transfer'){
         nw+=t.type==='income'?+t.amount:-+t.amount;
@@ -3978,17 +4117,42 @@ function renderNetworthChart(){
   if(S.charts.networth) S.charts.networth.destroy();
   const ctx=canvas.getContext('2d');
   const pos=netWorthByMonth[netWorthByMonth.length-1]>=0;
+  
+  // Create gradient for networth
+  let gradientNw = pos ? 'rgba(0,200,150,0.1)' : 'rgba(255,59,92,0.1)';
+  if (ctx) {
+    gradientNw = ctx.createLinearGradient(0, 0, 0, 240);
+    if(pos) {
+      gradientNw.addColorStop(0, 'rgba(0,200,150,0.2)');
+      gradientNw.addColorStop(1, 'rgba(0,200,150,0)');
+    } else {
+      gradientNw.addColorStop(0, 'rgba(255,59,92,0.2)');
+      gradientNw.addColorStop(1, 'rgba(255,59,92,0)');
+    }
+  }
+
   S.charts.networth=new Chart(ctx,{
     type:'line',
     data:{labels,datasets:[{
       label:'Patrimonio Netto',
       data:netWorthByMonth,
       borderColor:pos?'var(--ok)':'var(--bd)',
-      backgroundColor:pos?'rgba(0,200,150,.1)':'rgba(255,59,92,.1)',
-      fill:true,tension:.4,pointRadius:3,
-      pointBackgroundColor:pos?'var(--ok)':'var(--bd)',
+      backgroundColor:gradientNw,
+      fill:true,tension:.4,pointRadius:0,
+      borderWidth: 3,
+      pointHoverRadius: 6,
+      pointHoverBackgroundColor: pos?'var(--ok)':'var(--bd)',
     }]},
-    options:{responsive:true,plugins:{legend:{display:false}},scales:{y:{ticks:{callback:v=>fmtShort(v)}}}}
+    options:{
+      responsive:true,
+      maintainAspectRatio: false,
+      animation: { duration: 1500, easing: 'easeOutExpo' },
+      plugins:{legend:{display:false}, tooltip: { displayColors: false, padding: 12 }},
+      scales:{
+        y:{ticks:{callback:v=>fmtShort(v), color: resolveCol('var(--t3)')}, grid: { color: 'rgba(0,0,0,0.02)' }},
+        x:{ticks:{color: resolveCol('var(--t3)')}, grid: { display: false }}
+      }
+    }
   });
   // stats box
   const first=netWorthByMonth[0];

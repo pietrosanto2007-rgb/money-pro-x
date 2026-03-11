@@ -500,15 +500,15 @@
 <!-- ████ STATS ████ -->
 <div id="page-stats" class="page" style="padding-bottom:calc(86px + max(env(safe-area-inset-bottom),20px))">
   <!-- Header & Period Switcher -->
-  <div class="flex justify-between items-end mb-6">
+  <div class="flex flex-col sm:flex-row justify-between items-start sm:items-end mb-6 gap-4">
     <div>
       <h1 class="text-3xl font-black syne mb-1">Analisi</h1>
-      <p class="text-xs font-bold" style="color:var(--t2)">Ottieni una visione chiara delle tue finanze</p>
+      <p class="text-[11px] sm:text-xs font-bold" style="color:var(--t2)">Ottieni una visione chiara delle tue finanze</p>
     </div>
-    <div class="flex gap-1 p-1 rounded-2xl glass border" style="background:var(--bg2)">
-      <button onclick="setPeriod('month')" id="pm" class="ptab on">Mese</button>
-      <button onclick="setPeriod('quarter')" id="pq" class="ptab">3M</button>
-      <button onclick="setPeriod('year')" id="py" class="ptab">Anno</button>
+    <div class="flex gap-1 p-1 rounded-2xl glass border w-full sm:w-auto" style="background:var(--bg2)">
+      <button onclick="setPeriod('month')" id="pm" class="ptab on flex-1 sm:flex-none">Mese</button>
+      <button onclick="setPeriod('quarter')" id="pq" class="ptab flex-1 sm:flex-none">3M</button>
+      <button onclick="setPeriod('year')" id="py" class="ptab flex-1 sm:flex-none">Anno</button>
     </div>
   </div>
 
@@ -525,7 +525,7 @@
             <p class="text-[10px] font-black uppercase tracking-[0.2em] opacity-80">Riepilogo Periodo</p>
             <div class="glass px-2 py-1 rounded-lg text-[10px] font-bold"><span id="statPeriodLbl2">Mese In Corso</span></div>
           </div>
-          <h2 id="heroNet" class="text-4xl font-black mt-2 syne">€ 0,00</h2>
+          <h2 id="heroNet" class="text-3xl sm:text-4xl font-black mt-2 syne truncate">€ 0,00</h2>
           <p class="text-xs font-bold opacity-80">Bilancio Netto Totale</p>
         </div>
         
@@ -670,21 +670,30 @@
 <div id="page-settings" class="page space-y-4" style="padding-bottom:calc(72px + max(env(safe-area-inset-bottom),10px))">
   <h1 class="text-2xl font-bold">Impostazioni</h1>
 
-  <div class="card p-5 space-y-5">
+  <div class="card p-4 sm:p-5 space-y-4 sm:space-y-5">
     <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Preferenze</h3>
-    <div class="flex justify-between items-center">
-      <div class="flex items-center gap-3"><i data-lucide="moon" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Tema Scuro</span></div>
-      <label class="tog"><input type="checkbox" id="darkT" onchange="setDark(this.checked)"><span class="tog-sl"></span></label>
+    <div class="flex justify-between items-center gap-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <i data-lucide="moon" class="w-4 h-4 flex-shrink-0" style="color:var(--t2)"></i>
+        <span class="font-bold text-sm truncate">Tema Scuro</span>
+      </div>
+      <label class="tog flex-shrink-0"><input type="checkbox" id="darkT" onchange="setDark(this.checked)"><span class="tog-sl"></span></label>
     </div>
-    <div class="flex justify-between items-center">
-      <div class="flex items-center gap-3"><i data-lucide="coins" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Valuta</span></div>
-      <select id="currS" class="font-bold text-sm outline-none text-right" style="background:transparent;color:var(--br)" onchange="saveSettings()">
+    <div class="flex justify-between items-center gap-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <i data-lucide="coins" class="w-4 h-4 flex-shrink-0" style="color:var(--t2)"></i>
+        <span class="font-bold text-sm truncate">Valuta</span>
+      </div>
+      <select id="currS" class="font-bold text-sm outline-none text-right bg-transparent flex-shrink-0" style="color:var(--br)" onchange="saveSettings()">
         <option value="€">EUR (€)</option><option value="$">USD ($)</option><option value="£">GBP (£)</option>
       </select>
     </div>
-    <div class="flex justify-between items-center">
-      <div class="flex items-center gap-3"><i data-lucide="wallet" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Conto predefinito</span></div>
-      <select id="defWalletS" class="font-bold text-sm outline-none text-right" style="background:transparent;color:var(--br)" onchange="saveSettings()"></select>
+    <div class="flex justify-between items-center gap-3">
+      <div class="flex items-center gap-3 min-w-0">
+        <i data-lucide="wallet" class="w-4 h-4 flex-shrink-0" style="color:var(--t2)"></i>
+        <span class="font-bold text-sm truncate">Conto predefinito</span>
+      </div>
+      <select id="defWalletS" class="font-bold text-sm outline-none text-right bg-transparent flex-shrink-0" style="color:var(--br)" onchange="saveSettings()"></select>
     </div>
     <div>
       <div class="flex items-center gap-3 mb-3"><i data-lucide="palette" class="w-4 h-4" style="color:var(--t2)"></i><span class="font-bold text-sm">Colore Tema</span></div>
@@ -735,7 +744,7 @@
   <!-- achievements -->
   <div class="card p-5">
     <h3 class="text-[10px] font-black uppercase tracking-widest mb-4" style="color:var(--br)">Traguardi</h3>
-    <div id="achList" class="grid grid-cols-4 gap-3"></div>
+    <div id="achList" class="grid grid-cols-3 sm:grid-cols-4 gap-3"></div>
   </div>
 
   <div class="card p-5 space-y-3" style="border-color:rgba(0,200,150,.22)">
@@ -749,10 +758,10 @@
 
   <div class="card p-5 space-y-3" style="border-color:rgba(0,102,255,.2)">
     <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">☁️ Supabase Cloud Sync</h3>
-    <div id="sbStatus" class="flex items-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold" style="background:var(--bg2)">
+    <div id="sbStatus" class="flex items-center gap-2 py-2.5 px-3 rounded-xl text-xs font-bold overflow-hidden" style="background:var(--bg2)">
       <div id="sbDot" class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:#999"></div>
-      <span id="sbTxt" class="flex-1">Non configurato</span>
-      <button onclick="syncNow()" class="text-[9px] font-bold px-2 py-0.5 rounded-lg" style="background:rgba(0,102,255,.15);color:var(--br)">↺ Sync</button>
+      <span id="sbTxt" class="flex-1 truncate">Non configurato</span>
+      <button onclick="syncNow()" class="text-[9px] font-bold px-2 py-1 rounded-lg flex-shrink-0" style="background:rgba(0,102,255,.15);color:var(--br)">↺ Sync</button>
     </div>
     <!-- Schema SQL accordion -->
     <details class="rounded-xl overflow-hidden" style="border:1px solid var(--bo)">
@@ -787,7 +796,7 @@
   <!-- STRUMENTI -->
   <div class="card p-5 space-y-3">
     <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Strumenti</h3>
-    <div class="grid grid-cols-2 gap-2">
+    <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
       <button onclick="openGoals()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(0,200,150,.1);color:var(--ok)"><i data-lucide="target" class="w-3.5 h-3.5"></i>Obiettivi</button>
       <button onclick="openDebts()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(255,59,92,.1);color:var(--bd)"><i data-lucide="handshake" class="w-3.5 h-3.5"></i>Debiti</button>
       <button onclick="openSubs()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(124,58,237,.1);color:var(--acc)"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Abbonamenti</button>
@@ -798,7 +807,7 @@
       <button onclick="openConv()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(0,102,255,.12);color:var(--br)"><i data-lucide="arrow-left-right" class="w-3.5 h-3.5"></i>Converti</button>
       <button onclick="openSplit()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:rgba(124,58,237,.12);color:var(--acc)"><i data-lucide="divide" class="w-3.5 h-3.5"></i>Split</button>
       <button onclick="openCommand()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2" style="background:var(--bg2);color:var(--t2)"><i data-lucide="command" class="w-3.5 h-3.5"></i>Comandi</button>
-      <button onclick="openRecurring()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 col-span-2" style="background:var(--bg2);color:var(--t2)"><i data-lucide="repeat" class="w-3.5 h-3.5"></i>Transazioni Ricorrenti</button>
+      <button onclick="openRecurring()" class="py-3 rounded-xl text-xs font-bold flex items-center justify-center gap-2 col-span-2 sm:col-span-1" style="background:var(--bg2);color:var(--t2)"><i data-lucide="repeat" class="w-3.5 h-3.5"></i>Transazioni Ricorrenti</button>
     </div>
     <div class="h-px" style="background:var(--bo)"></div>
     <div class="flex justify-between items-center">
@@ -822,12 +831,12 @@
 <!-- ===== MODAL: DEBITI & CREDITI ===== -->
 <div id="debtsM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
   <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
-  <div class="px-5 py-2 flex justify-between items-center">
-    <h2 class="text-xl font-bold">💸 Debiti & Crediti</h2>
-    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">💸 Debiti & Crediti</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
-    <div class="rounded-2xl p-4 space-y-3" style="background:var(--bg2)">
+    <div class="card p-4 space-y-4" style="background:var(--bg2); border:none">
       <p class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Aggiungi voce</p>
       <div class="flex gap-2">
         <button id="debtTypeBorrow" onclick="setDebtType('borrow')" class="flex-1 py-2 rounded-xl text-xs font-bold" style="background:rgba(255,59,92,.12);color:var(--bd)">💸 Mi devono</button>
@@ -845,9 +854,9 @@
 <!-- ===== MODAL: ABBONAMENTI ===== -->
 <div id="subsM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
   <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
-  <div class="px-5 py-2 flex justify-between items-center">
-    <h2 class="text-xl font-bold">🔄 Abbonamenti</h2>
-    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">🔄 Abbonamenti</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
     <div class="rounded-2xl p-4 flex justify-between items-center" style="background:linear-gradient(135deg,rgba(124,58,237,.15),rgba(0,102,255,.15));border:1px solid rgba(124,58,237,.2)">
@@ -881,9 +890,9 @@
 <!-- ===== MODAL: PATRIMONIO NEL TEMPO ===== -->
 <div id="networthM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
   <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
-  <div class="px-5 py-2 flex justify-between items-center">
-    <h2 class="text-xl font-bold">📈 Patrimonio nel Tempo</h2>
-    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">📈 Patrimonio nel Tempo</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns">
     <canvas id="networthChart" style="max-height:280px" class="mt-2"></canvas>
@@ -894,12 +903,12 @@
 <!-- ===== MODAL: OBIETTIVI ===== -->
 <div id="goalsM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
   <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
-  <div class="px-5 py-2 flex justify-between items-center">
-    <h2 class="text-xl font-bold">🎯 Obiettivi</h2>
-    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">🎯 Obiettivi</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
-    <div class="rounded-2xl p-4 space-y-3" style="background:var(--bg2)">
+    <div class="card p-4 space-y-4" style="background:var(--bg2); border:none">
       <p class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Nuovo obiettivo</p>
       <input type="text" id="goalNameI" class="inp text-sm" placeholder="Es. Auto, Vacanza, Emergenza...">
       <div class="grid grid-cols-2 gap-2">
@@ -916,9 +925,9 @@
 <!-- ===== MODAL: TEMPLATE ===== -->
 <div id="tplM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:85vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
   <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
-  <div class="px-5 py-2 flex justify-between items-center">
-    <h2 class="text-xl font-bold">📋 Template Rapidi</h2>
-    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">📋 Template Rapidi</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns">
     <p class="text-xs mb-3" style="color:var(--t2)">Salva transazioni frequenti come template da riutilizzare rapidamente.</p>
@@ -929,9 +938,9 @@
 <!-- ===== MODAL: NOTE ===== -->
 <div id="notesM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:85vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
   <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
-  <div class="px-5 py-2 flex justify-between items-center">
-    <h2 class="text-xl font-bold">📝 Note</h2>
-    <button onclick="closeAll()" class="p-1.5 rounded-full" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">📝 Note</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-3">
     <div class="flex gap-2">
