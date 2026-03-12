@@ -1059,7 +1059,10 @@
       <div class="grid grid-cols-2 gap-2">
         <div>
           <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Simbolo</label>
-          <input type="text" id="invSymbol" class="inp text-sm" placeholder="Es. AAPL, MSFT...">
+          <div class="relative">
+            <input type="text" id="invSymbol" class="inp text-sm" placeholder="Es. AAPL, MSFT..." oninput="searchInvestSymbols(event)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            <div id="invSymbolSuggest" class="absolute left-0 right-0 mt-1 rounded-xl border text-[11px] bg-[var(--card)] shadow-lg max-h-56 overflow-y-auto hidden" style="border-color:var(--bo);z-index:40"></div>
+          </div>
         </div>
         <div>
           <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Quantità</label>

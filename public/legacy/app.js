@@ -3621,6 +3621,11 @@ async function addInvestment(){
   const qty=parseFloat(qtyEl?.value||'0');
   if(!sym){ toast('Inserisci il simbolo (es. AAPL)','warn'); return; }
   if(!qty || qty<=0){ toast('Inserisci una quantità valida','error'); return; }
+  const ok = await validateInvestSymbol(sym);
+  if(!ok){
+    toast('Simbolo non trovato. Seleziona un titolo dalla lista.', 'error');
+    return;
+  }
   const inv={
     symbol:sym,
     name:(nameEl?.value||'').trim(),
@@ -3744,6 +3749,96 @@ function saveInvestOnboard(){
   toast('API investimenti salvata ✓','success');
   closeAll(true);
   refreshInvestQuotes();
+}
+
+async function searchInvestSymbols(e){
+  const input = e && e.target ? e.target : document.getElementById('invSymbol');
+  const box = document.getElementById('invSymbolSuggest');
+  if(!input || !box) return;
+  const q = (input.value||'').trim();
+  AppState.investSearch = AppState.investSearch || {query:'',results:[]};
+  if(q.length < 2){
+    box.innerHTML='';
+    box.classList.add('hidden');
+    AppState.investSearch.query = q;
+    AppState.investSearch.results = [];
+    return;
+  }
+  const api = UserConfig.investApi || {};
+  const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
+  if(!token){
+    box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t2)">Configura prima una API key investimenti.</div>';
+    box.classList.remove('hidden');
+    return;
+  }
+  const currentQuery = q;
+  AppState.investSearch.query = q;
+  try{
+    const resp = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(q)}&token=${encodeURIComponent(token)}`);
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const results = Array.isArray(data?.result) ? data.result : [];
+    const filtered = results
+      .filter(r => r.symbol && (r.type === 'Common Stock' || r.type === 'ETF' || r.type === 'Stock' || !r.type))
+      .slice(0, 8);
+    // se l'utente ha continuato a scrivere, ignora questa risposta
+    if(AppState.investSearch.query !== currentQuery) return;
+    AppState.investSearch.results = filtered;
+    if(!filtered.length){
+      box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t2)">Nessun titolo trovato.</div>';
+      box.classList.remove('hidden');
+      return;
+    }
+    box.innerHTML = filtered.map(r=>{
+      const sym = (r.symbol||'').toUpperCase();
+      const desc = r.description || '';
+      const exch = r.exchange || '';
+      const meta = [exch,r.type].filter(Boolean).join(' · ');
+      return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onclick="selectInvestSymbol('${sym.replace(/'/g,'\\\'')}', ${JSON.stringify(desc)})">
+        <div class="font-bold">${sym}</div>
+        <div style="color:var(--t2)">${desc||'-'}</div>
+        ${meta?`<div class="mt-0.5" style="color:var(--t3)">${meta}</div>`:''}
+      </button>`;
+    }).join('');
+    box.classList.remove('hidden');
+  }catch(err){
+    console.warn('invest.search',err);
+    box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--bd)">Errore nella ricerca simboli.</div>';
+    box.classList.remove('hidden');
+  }
+}
+
+function selectInvestSymbol(sym, desc){
+  const input = document.getElementById('invSymbol');
+  const nameEl = document.getElementById('invName');
+  const box = document.getElementById('invSymbolSuggest');
+  if(input) input.value = sym;
+  if(nameEl && !nameEl.value) nameEl.value = desc || sym;
+  if(box){
+    box.innerHTML = '';
+    box.classList.add('hidden');
+  }
+}
+
+async function validateInvestSymbol(sym){
+  const s = (sym||'').trim().toUpperCase();
+  if(!s) return false;
+  AppState.investSearch = AppState.investSearch || {query:'',results:[]};
+  const cached = (AppState.investSearch.results||[]).some(r => (r.symbol||'').toUpperCase() === s);
+  if(cached) return true;
+  const api = UserConfig.investApi || {};
+  const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
+  if(!token) return false;
+  try{
+    const resp = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(s)}&token=${encodeURIComponent(token)}`);
+    if(!resp.ok) return false;
+    const data = await resp.json();
+    const results = Array.isArray(data?.result) ? data.result : [];
+    return results.some(r => (r.symbol||'').toUpperCase() === s);
+  }catch(e){
+    console.warn('invest.validate',e);
+    return false;
+  }
 }
 
 /* ============================================================

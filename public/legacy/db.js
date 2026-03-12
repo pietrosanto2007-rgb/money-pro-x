@@ -29,6 +29,7 @@ let AppState = {
   _lockedModalId:null,
   // Investimenti: cache quote in tempo reale per simbolo
   investQuotes:{}, // es. { 'AAPL': { price: 182.3, at: 1710000000000 } }
+  investSearch:{ query:'', results:[] }, // ultimo autocomplete simboli
 };
 let UserConfig = {
   // Derived from `_accounts` (kept for backward compatibility with older code paths).
