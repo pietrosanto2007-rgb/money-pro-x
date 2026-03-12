@@ -3626,14 +3626,20 @@ async function addInvestment(){
     toast('Simbolo non trovato. Seleziona un titolo dalla lista.', 'error');
     return;
   }
+  const profiles = AppState.investProfiles || {};
+  const prof = profiles[sym] || null;
+  const autoCurrency = prof && prof.currency ? String(prof.currency).toUpperCase() : '';
+  const autoName = prof && prof.name ? prof.name : '';
+  const autoLogo = prof && prof.logoUrl ? prof.logoUrl : '';
   const inv={
     symbol:sym,
-    name:(nameEl?.value||'').trim(),
+    name:(nameEl?.value||'').trim() || autoName || sym,
     quantity:qty,
-    currency:(curEl?.value||'').trim().toUpperCase()||'EUR',
+    currency:(curEl?.value||'').trim().toUpperCase() || autoCurrency || 'EUR',
     buyPrice:parseFloat(buyEl?.value||'0')||null,
     account:(accEl?.value||'').trim(),
     note:(noteEl?.value||'').trim(),
+    logoUrl:autoLogo||'',
     includeInTotal:document.getElementById('invIncludeTotal')?.checked!==false,
   };
   await DatabaseService.saveInvestment(inv);
@@ -3692,8 +3698,8 @@ function renderInvestList(){
     return `<div class="flex items-center justify-between gap-3 p-3 rounded-2xl" style="background:var(--bg2)">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
-          <div class="w-9 h-9 rounded-xl flex items-center justify-center" style="background:var(--card)">
-            <span class="text-xs font-black">${sym}</span>
+          <div class="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden" style="background:var(--card)">
+            ${inv.logoUrl?`<img src="${inv.logoUrl}" alt="${sym}" style="width:100%;height:100%;object-fit:cover">`:`<span class="text-xs font-black">${sym}</span>`}
           </div>
           <div class="min-w-0">
             <p class="text-sm font-bold truncate">${inv.name||sym}</p>
@@ -3818,6 +3824,8 @@ function selectInvestSymbol(sym, desc){
     box.innerHTML = '';
     box.classList.add('hidden');
   }
+  try{ if(input) input.blur(); }catch(e){}
+  try{ fetchInvestProfile(sym); }catch(e){}
 }
 
 async function validateInvestSymbol(sym){
@@ -3838,6 +3846,33 @@ async function validateInvestSymbol(sym){
   }catch(e){
     console.warn('invest.validate',e);
     return false;
+  }
+}
+
+async function fetchInvestProfile(sym){
+  const symbol = (sym||'').trim().toUpperCase();
+  if(!symbol) return;
+  const api = UserConfig.investApi || {};
+  const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
+  if(!token) return;
+  try{
+    const resp = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(token)}`);
+    if(!resp.ok) return;
+    const data = await resp.json();
+    if(!data || Object.keys(data).length===0) return;
+    AppState.investProfiles = AppState.investProfiles || {};
+    const prof = {
+      name: data.name || data.country || symbol,
+      currency: data.currency || '',
+      logoUrl: data.logo || '',
+    };
+    AppState.investProfiles[symbol] = prof;
+    const nameEl = document.getElementById('invName');
+    const curEl  = document.getElementById('invCurrency');
+    if(nameEl && !nameEl.value && prof.name) nameEl.value = prof.name;
+    if(curEl && !curEl.value && prof.currency) curEl.value = prof.currency;
+  }catch(e){
+    console.warn('invest.profile',e);
   }
 }
 
