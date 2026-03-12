@@ -601,6 +601,9 @@ async function init(){
   if(!UserConfig.subscriptions) UserConfig.subscriptions=[];
   if(!UserConfig.debts)         UserConfig.debts=[];
   if(!UserConfig.goals)         UserConfig.goals=[];
+  if(!UserConfig.investments)   UserConfig.investments=[];
+  if(typeof UserConfig.investIncludeInTotal!=='boolean') UserConfig.investIncludeInTotal=true;
+  if(!UserConfig.investApi)     UserConfig.investApi={provider:'finnhub',apiKey:''};
 
   // Prefer per-entity caches (newer than snapshot in mpxCfg2)
   try{ const subs=JSON.parse(localStorage.getItem('mpx_subscriptions')||'null'); if(subs?.length) UserConfig.subscriptions=subs; }catch(e){}
@@ -635,6 +638,16 @@ async function init(){
   try{
     if(OFFLINE && !localStorage.getItem('mpxSbOnboardDone') && hasAccounts()){
       setTimeout(()=>{ try{ openSbOnboard(); }catch(e){} },600);
+    }
+  }catch(e){}
+
+  // 4b. Carica investimenti da DB/localStorage
+  try{ await DatabaseService.loadInvestments(); }catch(e){}
+
+  // Onboarding investimenti (API mercato) — facoltativo
+  try{
+    if(!localStorage.getItem('mpxInvestOnboardDone')){
+      setTimeout(()=>{ try{ openInvestOnboard(); }catch(e){} },1400);
     }
   }catch(e){}
 
@@ -703,6 +716,7 @@ async function _syncAllFromDB(){
       DatabaseService.loadDebts(),
       DatabaseService.loadSubscriptions(),
       DatabaseService.loadGoals(),
+      DatabaseService.loadInvestments(),
     ]);
     // meta must load before transactions render (tags live here)
     await DatabaseService.loadTxMeta();
@@ -1364,8 +1378,27 @@ function updateDash(){
     }
   });
 
-  // Patrimonio netto = somma di tutti i saldi dei conti
+  // Patrimonio netto (conti) = somma di tutti i saldi dei conti
   const totalNet=Object.values(wB).reduce((s,v)=>s+v,0);
+
+  // Investimenti: valore corrente calcolato dalle quote in AppState.investQuotes
+  let investValue=0;
+  try{
+    const invs=UserConfig.investments||[];
+    const quotes=AppState.investQuotes||{};
+    invs.forEach(inv=>{
+      if(inv.includeInTotal===false) return;
+      const sym=(inv.symbol||'').toUpperCase();
+      const q=quotes[sym];
+      const price=q && typeof q.price==='number' ? q.price : null;
+      if(!price) return;
+      const qty=+inv.quantity||0;
+      if(qty>0) investValue+=price*qty;
+    });
+  }catch(e){}
+
+  const includeInv = UserConfig.investIncludeInTotal!==false;
+  const effectiveNet = includeInv ? (totalNet + investValue) : totalNet;
 
   // month transactions
   const mTxs = AppState.transactions.filter(t=>{
@@ -1380,7 +1413,7 @@ function updateDash(){
   const balEl = document.getElementById('uiBal');
   if(balEl){
     const show = UserConfig.showBalance;
-    balEl.textContent = show ? fmtFull(totalNet) : '••••••';
+    balEl.textContent = show ? fmtFull(effectiveNet) : '••••••';
     balEl.style.filter = show ? 'none' : 'blur(8px)';
   }
   setEl('uiIn',  fmtShort(totalIncome));
@@ -1393,7 +1426,7 @@ function updateDash(){
   // health score
   renderHealthScore(savingsRate, totalIncome, totalExpense);
   renderWallets(wB, totalNet);
-  updateGoal(totalNet);
+  updateGoal(effectiveNet);
   renderBudgetMini(mTxs);
   renderForecast(mTxs, totalExpense, totalIncome, dim);
   renderInsights(mTxs, totalIncome, totalExpense, savingsRate);
@@ -1402,6 +1435,7 @@ function updateDash(){
   renderRecentTxs();
   try{ renderDebtsMini(); }catch(e){}
   try{ renderSubsMini(); }catch(e){}
+  try{ renderInvestMini(investValue, includeInv ? effectiveNet : null); }catch(e){}
 
   // savings rate gauge (stats tab)
   setEl('savingsRatePct', savingsRate>0?savingsRate+'%':'0%');
@@ -3500,6 +3534,219 @@ function openSubsM(){
 }
 
 /* ============================================================
+   INVESTIMENTI
+============================================================ */
+function computeInvestSummary(){
+  const invs=UserConfig.investments||[];
+  const quotes=AppState.investQuotes||{};
+  let totalValue=0;
+  let totalCost=0;
+  invs.forEach(inv=>{
+    const qty=+inv.quantity||0;
+    if(!qty) return;
+    const buy=inv.buyPrice!=null?+inv.buyPrice:0;
+    if(buy>0) totalCost+=buy*qty;
+    const sym=(inv.symbol||'').toUpperCase();
+    const q=quotes[sym];
+    const price=q && typeof q.price==='number'?q.price:0;
+    if(price>0) totalValue+=price*qty;
+  });
+  const pnl=totalValue-totalCost;
+  return { totalValue, totalCost, pnl };
+}
+function renderInvestMini(currentValue, effectiveNet){
+  const el=document.getElementById('investMini');
+  if(!el) return;
+  const invs=UserConfig.investments||[];
+  if(!invs.length){
+    el.innerHTML='<p class="text-xs" style="color:var(--t2)">Nessun investimento salvato</p>';
+    return;
+  }
+  const sum=computeInvestSummary();
+  const val=sum.totalValue||0;
+  const pnl=sum.pnl||0;
+  const col=pnl>=0?'var(--ok)':'var(--bd)';
+  const lblPnl=pnl>=0?`+${fmt(pnl)}`:fmt(pnl);
+  const includeInv = UserConfig.investIncludeInTotal!==false;
+  const linkLabel=includeInv?'Inclusi nel Patrimonio':'Separati dal Patrimonio';
+  el.innerHTML=`<div class="space-y-1.5">
+    <div class="flex justify-between items-baseline gap-2">
+      <p class="text-xs leading-tight" style="color:var(--t2)">${invs.length} posizione${invs.length>1?'i':''}</p>
+      <p class="font-black text-sm leading-tight" style="color:${col};font-variant-numeric:tabular-nums">${fmt(val)}</p>
+    </div>
+    <p class="text-[10px]" style="color:${col}">${lblPnl} rispetto al costo totale</p>
+    <button onclick="openInvestM()" class="mt-1 text-[10px] font-bold px-2 py-1 rounded-lg" style="background:var(--bg2);color:var(--t2)">${linkLabel}</button>
+  </div>`;
+}
+async function refreshInvestQuotes(){
+  try{
+    const api = UserConfig.investApi||{};
+    const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
+    const invs = (UserConfig.investments||[]).filter(i=>i.symbol && i.quantity>0);
+    if(!invs.length) return;
+    if(!token){
+      console.warn('Invest API key mancante');
+      return;
+    }
+    const symbols=[...new Set(invs.map(i=>String(i.symbol||'').toUpperCase()).filter(Boolean))];
+    const quotes={...(AppState.investQuotes||{})};
+    await Promise.all(symbols.map(async sym=>{
+      try{
+        const resp=await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(token)}`);
+        if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data=await resp.json();
+        const price=typeof data?.c==='number'?data.c:null;
+        if(price){
+          quotes[sym]={price,at:Date.now(),raw:data};
+        }
+      }catch(e){
+        console.warn('quote',sym,e);
+      }
+    }));
+    AppState.investQuotes=quotes;
+    renderAll('dash');
+  }catch(e){
+    console.warn('refreshInvestQuotes',e);
+  }
+}
+async function addInvestment(){
+  const symEl=document.getElementById('invSymbol');
+  const qtyEl=document.getElementById('invQty');
+  const curEl=document.getElementById('invCurrency');
+  const buyEl=document.getElementById('invBuy');
+  const accEl=document.getElementById('invAccount');
+  const nameEl=document.getElementById('invName');
+  const noteEl=document.getElementById('invNote');
+  const sym=(symEl?.value||'').trim().toUpperCase();
+  const qty=parseFloat(qtyEl?.value||'0');
+  if(!sym){ toast('Inserisci il simbolo (es. AAPL)','warn'); return; }
+  if(!qty || qty<=0){ toast('Inserisci una quantità valida','error'); return; }
+  const inv={
+    symbol:sym,
+    name:(nameEl?.value||'').trim(),
+    quantity:qty,
+    currency:(curEl?.value||'').trim().toUpperCase()||'EUR',
+    buyPrice:parseFloat(buyEl?.value||'0')||null,
+    account:(accEl?.value||'').trim(),
+    note:(noteEl?.value||'').trim(),
+    includeInTotal:document.getElementById('invIncludeTotal')?.checked!==false,
+  };
+  await DatabaseService.saveInvestment(inv);
+  try{
+    if(symEl) symEl.value='';
+    if(nameEl) nameEl.value='';
+    if(qtyEl) qtyEl.value='';
+    if(buyEl) buyEl.value='';
+    if(noteEl) noteEl.value='';
+  }catch(e){}
+  try{ localStorage.setItem('mpx_investments',JSON.stringify(UserConfig.investments||[])); }catch(e){}
+  toast('Investimento salvato ✓','success');
+  await refreshInvestQuotes();
+  renderInvestList();
+}
+async function deleteInvestment(id){
+  await DatabaseService.deleteInvestment(id);
+  try{ localStorage.setItem('mpx_investments',JSON.stringify(UserConfig.investments||[])); }catch(e){}
+  renderInvestList();
+  renderAll('dash');
+}
+function renderInvestList(){
+  const el=document.getElementById('investList');
+  if(!el) return;
+  const invs=UserConfig.investments||[];
+  if(!invs.length){
+    el.innerHTML='<p class="text-sm text-center py-4" style="color:var(--t2)">Nessun investimento salvato.</p>';
+    return;
+  }
+  const { totalValue,totalCost,pnl }=computeInvestSummary();
+  const quotes=AppState.investQuotes||{};
+  const col=pnl>=0?'var(--ok)':'var(--bd)';
+  const header=document.getElementById('investTotals');
+  if(header){
+    header.innerHTML=`<div class="flex justify-between items-center">
+      <div>
+        <p class="text-[10px] font-bold uppercase tracking-wider mb-1" style="color:var(--t2)">Valore corrente</p>
+        <p class="text-xl font-black" style="color:${col}">${fmt(totalValue)}</p>
+      </div>
+      <div class="text-right">
+        <p class="text-[10px] font-bold uppercase tracking-wider mb-1" style="color:var(--t2)">P/L totale</p>
+        <p class="text-sm font-black" style="color:${col}">${pnl>=0?'+':''}${fmt(pnl)}</p>
+      </div>
+    </div>`;
+  }
+  el.innerHTML=invs.map(inv=>{
+    const sym=(inv.symbol||'').toUpperCase();
+    const q=quotes[sym];
+    const price=q && typeof q.price==='number'?q.price:null;
+    const qty=+inv.quantity||0;
+    const val=price?price*qty:0;
+    const buy=inv.buyPrice!=null?+inv.buyPrice:0;
+    const cost=buy>0?buy*qty:0;
+    const pnlRow=val-cost;
+    const colRow=pnlRow>=0?'var(--ok)':'var(--bd)';
+    return `<div class="flex items-center justify-between gap-3 p-3 rounded-2xl" style="background:var(--bg2)">
+      <div class="flex-1 min-w-0">
+        <div class="flex items-center gap-2">
+          <div class="w-9 h-9 rounded-xl flex items-center justify-center" style="background:var(--card)">
+            <span class="text-xs font-black">${sym}</span>
+          </div>
+          <div class="min-w-0">
+            <p class="text-sm font-bold truncate">${inv.name||sym}</p>
+            <p class="text-[10px]" style="color:var(--t2)">${qty} · ${buy?('Costo medio '+fmt(buy)):''}</p>
+          </div>
+        </div>
+      </div>
+      <div class="text-right text-xs">
+        <p class="font-bold" style="color:${price?'var(--t)': 'var(--t3)'}">${price?fmt(price):'—'}</p>
+        <p class="font-black" style="color:${colRow}">${price?fmt(val):'—'}</p>
+        ${price?`<p class="text-[10px]" style="color:${colRow}">${pnlRow>=0?'+':''}${fmt(pnlRow)}</p>`:''}
+      </div>
+      <button onclick='deleteInvestment(${JSON.stringify(normId(inv.id))})' class="px-2 py-1 rounded-lg text-[9px] font-bold" style="background:rgba(255,59,92,.1);color:var(--bd)">Elimina</button>
+    </div>`;
+  }).join('');
+}
+function openInvestM(){
+  haptic();
+  if(!UserConfig.investments) UserConfig.investments=[];
+  renderInvestList();
+  openModal('investM');
+  refreshInvestQuotes();
+}
+function openInvestOnboard(){
+  try{
+    const keyInp=document.getElementById('invApiKeyInp');
+    const toggle=document.getElementById('invIncludeToggle');
+    const api=UserConfig.investApi||{};
+    if(keyInp) keyInp.value=api.apiKey||localStorage.getItem('mpxInvestApiKey')||'';
+    if(toggle) toggle.checked=UserConfig.investIncludeInTotal!==false;
+  }catch(e){}
+  openModal('investOnboardM');
+}
+function skipInvestOnboard(){
+  try{ localStorage.setItem('mpxInvestOnboardDone','1'); }catch(e){}
+  closeAll(true);
+}
+function saveInvestOnboard(){
+  const key=(document.getElementById('invApiKeyInp')?.value||'').trim();
+  const include=document.getElementById('invIncludeToggle')?.checked!==false;
+  if(!key){
+    toast('Inserisci una API key valida (es. Finnhub)','error');
+    return;
+  }
+  try{
+    localStorage.setItem('mpxInvestApiKey',key);
+    localStorage.setItem('mpxInvestOnboardDone','1');
+  }catch(e){}
+  UserConfig.investApi=UserConfig.investApi||{provider:'finnhub',apiKey:''};
+  UserConfig.investApi.apiKey=key;
+  UserConfig.investIncludeInTotal=include;
+  saveConfig();
+  toast('API investimenti salvata ✓','success');
+  closeAll(true);
+  refreshInvestQuotes();
+}
+
+/* ============================================================
    GOALS MANAGER (multipli)
 ============================================================ */
 async function addGoal(){
@@ -5077,6 +5324,7 @@ async function addDetectedSubs(){
     {icon:'arrow-left-right',label:'FX',      color:'var(--br)',  bg:'rgba(0,102,255,.10)', fn:'openConv()'},
     {icon:'divide',          label:'Split',   color:'var(--acc)', bg:'rgba(124,58,237,.12)',fn:'openSplit()'},
     {icon:'trending-up',     label:'Cash',    color:'var(--ok)',  bg:'rgba(0,200,150,.12)', fn:'openCashFlowModal()'},
+    {icon:'line-chart',      label:'Invest',  color:'var(--ok)',  bg:'rgba(0,200,150,.16)', fn:'openInvestM()'},
     {icon:'scan-line',       label:'Scan',    color:'var(--br)',  bg:'rgba(0,102,255,.10)', fn:'openReceiptScanner()'},
     {icon:'upload',          label:'Import',  color:'var(--t2)',  bg:'var(--bg2)',          fn:'openImpM()'},
     {icon:'command',         label:'Cmd',     color:'var(--t2)',  bg:'var(--bg2)',          fn:'openCommand()'},

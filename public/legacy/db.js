@@ -27,6 +27,8 @@ let AppState = {
   _layoutOverId:null,
   _localMeta:{}, 
   _lockedModalId:null,
+  // Investimenti: cache quote in tempo reale per simbolo
+  investQuotes:{}, // es. { 'AAPL': { price: 182.3, at: 1710000000000 } }
 };
 let UserConfig = {
   // Derived from `_accounts` (kept for backward compatibility with older code paths).
@@ -42,6 +44,13 @@ let UserConfig = {
   fx:{ EUR:1, USD:1.08, GBP:0.86, JPY:163, CHF:0.96, CAD:1.47 },
   fxUpdated:null,
   theme:'system', currency:'€',
+  // Investimenti: portafoglio e preferenze
+  investments:[],          // [{ id, symbol, name, quantity, currency, buyPrice, account, note, includeInTotal }]
+  investIncludeInTotal:true, // se true il valore corrente si somma al Patrimonio Netto
+  investApi:{              // provider esterno per le quote (per-user)
+    provider:'finnhub',
+    apiKey:'',
+  },
 };
 const Categories = {
   food:     {l:'Cibo & Rist.',   ic:'utensils',     col:'#FF9500',bg:'rgba(255,149,0,.12)',   kw:['spesa','ristorante','pizza','bar','caffè','paninoteca','gelato','cibo','lidl','esselunga','conad','carrefour','supermercato']},
@@ -739,6 +748,93 @@ const DatabaseService = {
     try{ await db.from('subscriptions').delete().eq('id',sid); }catch(e){ console.warn('subs.delete',e); }
   },
 
+  /* ── INVESTMENTS ─────────────────────────────────────── */
+  _saveInvestments(){ try{ localStorage.setItem('mpx_investments',JSON.stringify(UserConfig.investments||[])); }catch(e){} },
+  async loadInvestments(){
+    const localHas=(()=>{ try{ return (JSON.parse(localStorage.getItem('mpx_investments')||'[]')||[]).length>0; }catch(e){ return false; } })();
+    if(db){
+      try{
+        const {data,error}=await db.from('investments').select('*').order('created_at',{ascending:false});
+        if(!error && data && (data.length||!localHas)){
+          UserConfig.investments=data.map(r=>({
+            id:normId(r.id),
+            symbol:r.symbol,
+            name:r.name||'',
+            quantity:+r.quantity||0,
+            currency:r.currency||'',
+            account:r.account_name||'',
+            buyPrice:r.buy_price!=null?+r.buy_price:null,
+            includeInTotal:r.include_in_total!==false,
+            note:r.note||'',
+          }));
+          this._saveInvestments();
+          return;
+        }
+      }catch(e){ console.warn('invest.load',e); }
+    }
+    try{
+      const lc=JSON.parse(localStorage.getItem('mpx_investments')||'null');
+      if(lc?.length){
+        UserConfig.investments=lc.map(inv=>({
+          ...(inv||{}),
+          id:normId(inv.id),
+          includeInTotal:inv.includeInTotal!==false,
+        }));
+        return;
+      }
+    }catch(e){}
+    if(!UserConfig.investments) UserConfig.investments=[];
+  },
+  async saveInvestment(inv){
+    if(!UserConfig.investments) UserConfig.investments=[];
+    const v={...(inv||{})};
+    v.id=normId(v.id)||('li'+Date.now()+'_'+Math.random().toString(36).slice(2,4));
+    v.symbol=(v.symbol||'').trim().toUpperCase();
+    v.name=(v.name||'').trim();
+    v.quantity=+v.quantity||0;
+    v.currency=(v.currency||'').trim().toUpperCase();
+    v.account=(v.account||'').trim();
+    v.buyPrice=v.buyPrice!=null?+v.buyPrice:null;
+    v.includeInTotal=v.includeInTotal!==false;
+    v.note=v.note||'';
+    if(!v.symbol || !v.quantity || v.quantity<=0) return v;
+    const idx=UserConfig.investments.findIndex(x=>idEq(x.id,v.id));
+    if(idx>=0) UserConfig.investments[idx]=Object.assign({},UserConfig.investments[idx],v); else UserConfig.investments.unshift(v);
+    this._saveInvestments();
+    if(!db) return v;
+    const row={
+      symbol:v.symbol,
+      name:v.name||null,
+      quantity:v.quantity,
+      currency:v.currency||null,
+      account_name:v.account||null,
+      buy_price:v.buyPrice||null,
+      include_in_total:v.includeInTotal!==false,
+      note:v.note||null,
+    };
+    try{
+      if(isUUID(v.id) && !isLocalId(v.id,'li')){
+        await db.from('investments').upsert({id:v.id,...row},{onConflict:'id'});
+      }else{
+        const {data,error}=await db.from('investments').insert([row]).select();
+        if(!error && data?.[0]?.id){
+          v.id=data[0].id;
+          const j=UserConfig.investments.findIndex(x=>idEq(x.id,v.id));
+          if(j>=0) UserConfig.investments[j].id=v.id;
+          this._saveInvestments();
+        }
+      }
+    }catch(e){ console.warn('invest.save',e); }
+    return v;
+  },
+  async deleteInvestment(id){
+    const iid=normId(id); if(!iid) return;
+    UserConfig.investments=(UserConfig.investments||[]).filter(x=>!idEq(x.id,iid));
+    this._saveInvestments();
+    if(!db || !isUUID(iid) || isLocalId(iid,'li')) return;
+    try{ await db.from('investments').delete().eq('id',iid); }catch(e){ console.warn('invest.delete',e); }
+  },
+
   /* ── MIGRATE LOCAL → DB ──────────────────────────────── */
   async migrateAll(){
     if(!db){ toast('Connetti Supabase prima','warn'); return; }
@@ -776,6 +872,30 @@ const DatabaseService = {
     await run(async()=>{ for(const g of (UserConfig.goals||[])) await this.saveGoal(g); },'goals');
     await run(async()=>{ for(const d of (UserConfig.debts||[])) await this.saveDebt(d); },'debts');
     await run(async()=>{ for(const s of (UserConfig.subscriptions||[])) await this.saveSub(s); },'subscriptions');
+    await run(async()=>{
+      if(!UserConfig.investments?.length || !db) return;
+      for(const inv of UserConfig.investments){
+        const row={
+          symbol:inv.symbol,
+          name:inv.name||null,
+          quantity:inv.quantity||0,
+          currency:inv.currency||null,
+          account_name:inv.account||null,
+          buy_price:inv.buyPrice||null,
+          include_in_total:inv.includeInTotal!==false,
+          note:inv.note||null,
+        };
+        if(isUUID(inv.id) && !isLocalId(inv.id,'li')){
+          await db.from('investments').upsert({id:inv.id,...row},{onConflict:'id'});
+        }else{
+          const {data,error}=await db.from('investments').insert([row]).select();
+          if(!error && data?.[0]?.id){
+            inv.id=data[0].id;
+          }
+        }
+      }
+      try{ localStorage.setItem('mpx_investments',JSON.stringify(UserConfig.investments)); }catch(e){}
+    },'investments');
 
     await run(async()=>{
       const meta=loadMetadata();
@@ -825,4 +945,5 @@ CREATE TABLE IF NOT EXISTS debts (id uuid DEFAULT gen_random_uuid() PRIMARY KEY,
 CREATE TABLE IF NOT EXISTS subscriptions (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, name text NOT NULL, amount numeric(12,2) NOT NULL, frequency text DEFAULT 'monthly', next_date date, active boolean DEFAULT true, color text, created_at timestamptz DEFAULT now());
 CREATE TABLE IF NOT EXISTS templates (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, name text NOT NULL, type text NOT NULL, amount numeric(12,2), category_key text, account_name text, description text, tags text DEFAULT '[]', created_at timestamptz DEFAULT now());
 CREATE TABLE IF NOT EXISTS notes (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, text text NOT NULL, done boolean DEFAULT false, date date NOT NULL, created_at timestamptz DEFAULT now());
-CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text, updated_at timestamptz DEFAULT now());`;
+CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text, updated_at timestamptz DEFAULT now());
+CREATE TABLE IF NOT EXISTS investments (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, symbol text NOT NULL, name text, quantity numeric(20,8) NOT NULL, currency text, account_name text, buy_price numeric(12,4), include_in_total boolean DEFAULT true, note text, created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());`;

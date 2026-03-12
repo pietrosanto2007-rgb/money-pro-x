@@ -221,6 +221,33 @@
   </div>
 </div>
 
+<!-- ===== MODAL: ONBOARDING INVESTIMENTI (FIRST RUN) ===== -->
+<div id="investOnboardM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:82vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">📈 Attiva investimenti in tempo reale</h2>
+    <button onclick="skipInvestOnboard()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)" aria-label="Chiudi"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
+    <div class="card p-4 space-y-2" style="background:var(--bg2); border:none">
+      <p class="text-sm font-bold">Collega una API mercato (es. Finnhub)</p>
+      <p class="text-xs" style="color:var(--t2)">Inserisci la tua API key personale per vedere il valore dei tuoi investimenti aggiornato in tempo reale. Puoi saltare questo passaggio e configurarlo più tardi nelle Impostazioni.</p>
+    </div>
+    <div>
+      <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">API Key</label>
+      <input type="text" id="invApiKeyInp" class="inp text-sm" placeholder="Chiave API Finnhub..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace">
+    </div>
+    <div class="flex items-center justify-between rounded-xl px-3 py-2.5" style="background:var(--bg2)">
+      <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Somma al Patrimonio Netto</span>
+      <label class="tog"><input type="checkbox" id="invIncludeToggle" checked><span class="tog-sl"></span></label>
+    </div>
+    <button onclick="saveInvestOnboard()" class="gbtn w-full py-3 rounded-xl text-sm flex justify-center items-center gap-2">
+      <i data-lucide="trending-up" class="w-4 h-4"></i>Salva API investimenti
+    </button>
+    <button onclick="skipInvestOnboard()" class="w-full py-2 rounded-xl text-xs font-bold" style="background:var(--bg2);color:var(--t2)">Salta per ora</button>
+  </div>
+</div>
+
 <!-- ===== MODAL: CALCULATOR ===== -->
 <div id="calcM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:72vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
   <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
@@ -424,7 +451,7 @@
   </div>
 
   <!-- MINI WIDGETS -->
-  <div class="grid grid-cols-2 gap-2" data-block="home-mini" data-label="Mini widgets">
+  <div class="grid grid-cols-2 md:grid-cols-3 gap-2" data-block="home-mini" data-label="Mini widgets">
     <div class="card p-4">
       <div class="flex justify-between items-center mb-2">
         <p class="text-[9px] font-bold uppercase tracking-widest" style="color:var(--t2)">Debiti</p>
@@ -438,6 +465,13 @@
         <button onclick="openSubs()" class="text-[10px] font-bold" style="color:var(--br)">Apri</button>
       </div>
       <div id="subsMini"></div>
+    </div>
+    <div class="card p-4">
+      <div class="flex justify-between items-center mb-2">
+        <p class="text-[9px] font-bold uppercase tracking-widest" style="color:var(--t2)">Investimenti</p>
+        <button onclick="openInvestM()" class="text-[10px] font-bold" style="color:var(--br)">Apri</button>
+      </div>
+      <div id="investMini"></div>
     </div>
   </div>
 
@@ -1008,6 +1042,56 @@
       <button onclick="addSubscription()" class="gbtn w-full py-3 rounded-xl text-sm font-bold">Aggiungi</button>
     </div>
     <div id="subsList" class="space-y-2"></div>
+  </div>
+</div>
+
+<!-- ===== MODAL: INVESTIMENTI ===== -->
+<div id="investM" class="sh-up fixed bottom-0 left-0 right-0 flex flex-col" style="max-height:88vh;border-top:1px solid var(--bo);padding-bottom:max(env(safe-area-inset-bottom),16px)">
+  <div class="flex justify-center pt-3 pb-1"><div class="w-10 h-1 rounded-full" style="background:var(--bo)"></div></div>
+  <div class="px-5 py-2 flex justify-between items-center gap-3">
+    <h2 class="text-xl font-bold truncate">📈 Investimenti</h2>
+    <button onclick="closeAll()" class="p-1.5 rounded-full flex-shrink-0" style="background:var(--bg2)"><i data-lucide="x" class="w-4 h-4"></i></button>
+  </div>
+  <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
+    <div id="investTotals" class="card p-4" style="background:var(--bg2); border:none"></div>
+    <div class="card p-4 space-y-3" style="background:var(--bg2); border:none">
+      <p class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Nuova posizione</p>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Simbolo</label>
+          <input type="text" id="invSymbol" class="inp text-sm" placeholder="Es. AAPL, MSFT...">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Quantità</label>
+          <input type="number" id="invQty" class="inp text-sm" placeholder="Es. 10" step="0.000001" min="0">
+        </div>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Valuta</label>
+          <input type="text" id="invCurrency" class="inp text-sm" placeholder="Es. EUR, USD" value="EUR">
+        </div>
+        <div>
+          <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Prezzo medio carico</label>
+          <input type="number" id="invBuy" class="inp text-sm" placeholder="Es. 100" step="0.0001" min="0">
+        </div>
+      </div>
+      <div>
+        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Nome / broker</label>
+        <input type="text" id="invName" class="inp text-sm" placeholder="Es. ETF S&P500, Fineco...">
+      </div>
+      <div>
+        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Nota (opz.)</label>
+        <input type="text" id="invNote" class="inp text-sm" placeholder="Dettagli aggiuntivi...">
+      </div>
+      <div class="flex items-center justify-between rounded-xl px-3 py-2.5" style="background:var(--card2)">
+        <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Somma al Patrimonio Netto</span>
+        <label class="tog"><input type="checkbox" id="invIncludeTotal" checked><span class="tog-sl"></span></label>
+      </div>
+      <button onclick="addInvestment()" class="gbtn w-full py-3 rounded-xl text-sm font-bold">Aggiungi investimento</button>
+      <button onclick="refreshInvestQuotes()" class="w-full py-2 rounded-xl text-xs font-bold flex justify-center items-center gap-2" style="background:var(--bg2);color:var(--t2)"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Aggiorna prezzi</button>
+    </div>
+    <div id="investList" class="space-y-2"></div>
   </div>
 </div>
 
