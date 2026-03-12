@@ -82,16 +82,17 @@
       </div>
       <!-- transfer: from → to -->
       <div id="transferRow" class="hidden rounded-xl p-4 space-y-3" style="background:var(--bg2);border:1.5px solid rgba(255,149,0,.25)">
-        <div class="flex items-center gap-3">
-          <div class="flex-1">
+        <div class="flex flex-col gap-3 sm:flex-row sm:items-center">
+          <div class="flex-1 min-w-0">
             <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--wn)">Da conto</label>
             <div class="acc-selector" id="accFromWrap"></div>
             <select id="txAccFrom" class="hidden"></select>
           </div>
-          <div class="flex flex-col items-center pt-4">
-            <i data-lucide="arrow-right" class="w-5 h-5 arr-pulse" style="color:var(--wn)"></i>
+          <div class="flex flex-col items-center pt-1 sm:pt-4">
+            <i data-lucide="arrow-down" class="w-5 h-5 sm:hidden" style="color:var(--wn)"></i>
+            <i data-lucide="arrow-right" class="w-5 h-5 arr-pulse hidden sm:block" style="color:var(--wn)"></i>
           </div>
-          <div class="flex-1">
+          <div class="flex-1 min-w-0">
             <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--wn)">A conto</label>
             <div class="acc-selector" id="accToWrap"></div>
             <select id="txAccTo" class="hidden"></select>
@@ -158,7 +159,7 @@
         <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Nome conto</label>
         <input type="text" id="accSetupName" class="inp text-sm" placeholder="Es. Carta, Contanti, Banca...">
       </div>
-      <div class="grid grid-cols-2 gap-2">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
         <div>
           <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Tipo</label>
           <select id="accSetupType" class="inp text-sm">
@@ -776,9 +777,9 @@
     <!-- Aggiungi conto -->
     <div class="rounded-2xl p-3 space-y-2" style="background:var(--bg2)">
       <p class="text-[9px] font-bold uppercase tracking-wider" style="color:var(--t2)">Nuovo conto</p>
-      <div class="flex gap-2">
-        <input type="text" id="nWallet" placeholder="Nome conto..." class="inp py-2 text-sm flex-1">
-        <select id="nWalletType" class="inp py-2 text-xs w-28 flex-shrink-0">
+      <div class="flex flex-col sm:flex-row gap-2">
+        <input type="text" id="nWallet" placeholder="Nome conto..." class="inp py-2 text-sm flex-1 min-w-0">
+        <select id="nWalletType" class="inp py-2 text-sm w-full sm:w-28 flex-shrink-0">
           <option value="checking">💳 Corrente</option>
           <option value="savings">🏦 Risparmi</option>
           <option value="cash">💵 Contanti</option>
@@ -787,7 +788,7 @@
         </select>
       </div>
       <div class="flex gap-2 items-center">
-        <input type="number" id="nWalletBal" placeholder="Saldo iniziale €" class="inp py-2 text-sm flex-1" step="0.01">
+        <input type="number" id="nWalletBal" placeholder="Saldo iniziale €" class="inp py-2 text-sm flex-1 min-w-0" step="0.01">
         <div id="nWalletColorDot" onclick="cycleAccColor()" title="Cambia colore" style="width:32px;height:32px;border-radius:50%;background:#0066FF;cursor:pointer;flex-shrink:0;border:3px solid rgba(255,255,255,.3)"></div>
       </div>
       <!-- Icon Picker -->
