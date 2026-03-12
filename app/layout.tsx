@@ -15,6 +15,14 @@ export default function RootLayout({
   return (
     <html lang="it">
       <body className="h-screen flex flex-col antialiased">
+        <Script id="env-vars" strategy="beforeInteractive">
+          {`
+            window.ENV = {
+              SB_URL: "${process.env.NEXT_PUBLIC_SUPABASE_URL || ''}",
+              SB_KEY: "${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''}"
+            };
+          `}
+        </Script>
         {children}
 
         {/* Legacy vendor deps (kept for parity with index.html) */}
@@ -28,7 +36,9 @@ export default function RootLayout({
           strategy="beforeInteractive"
         />
 
-        {/* Legacy app script (extracted from index.html) */}
+        {/* Legacy app scripts (refactored into modules) */}
+        <Script src="/legacy/db.js" strategy="afterInteractive" />
+        <Script src="/legacy/ui.js" strategy="afterInteractive" />
         <Script src="/legacy/app.js" strategy="afterInteractive" />
       </body>
     </html>

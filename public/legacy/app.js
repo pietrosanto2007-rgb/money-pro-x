@@ -1,213 +1,56 @@
 /* ============================================================
-   CONFIG — inserisci qui le tue credenziali Supabase
-============================================================ */
-const SB_URL = localStorage.getItem('mpxSbUrl') || 'INSERISCI_QUI_URL';
-const SB_KEY = localStorage.getItem('mpxSbKey') || 'INSERISCI_QUI_CHIAVE';
-const OFFLINE = SB_URL === 'INSERISCI_QUI_URL' || !SB_URL;
-let db = null;
-if(!OFFLINE){
-  try{ db = window.supabase.createClient(SB_URL, SB_KEY); }
-  catch(e){ console.error('Supabase init error:', e); }
-}
-
-/* ============================================================
-   SCHEMA ADAPTER — tabella: id, type, amount, category_id,
-   description, date, recurring, created_at, account
-   (account_to e tags salvati in localStorage)
-============================================================ */
-/* ── UUID helper ── */
-function genUUID(){
-  try{ return crypto.randomUUID(); }catch(e){
-    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g,c=>{const r=Math.random()*16|0;return(c==='x'?r:(r&0x3|0x8)).toString(16);});
-  }
-}
-
-/* ── ID helpers ── */
-function normId(v){ return v==null?'':String(v); }
-function idEq(a,b){ return normId(a)===normId(b); }
-function isUUID(v){ return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(normId(v)); }
-function isLocalId(v,prefix){ const s=normId(v); return !s || !isUUID(s) || (prefix && s.startsWith(prefix)); }
-
-/* ── Time helpers (HH:MM) ── */
-function normTime(v){
-  const s=String(v==null?'':v).trim();
-  if(!s) return '';
-  // Accept "HH:MM", "H:MM", "HH.MM", optional seconds.
-  const m=s.match(/^(\d{1,2})[:.](\d{2})(?::\d{2})?$/);
-  if(m){
-    const hh=parseInt(m[1],10);
-    const mm=parseInt(m[2],10);
-    if(Number.isFinite(hh)&&Number.isFinite(mm)&&hh>=0&&hh<=23&&mm>=0&&mm<=59){
-      return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
-    }
-  }
-  // Accept "930"/"0930" → "09:30"
-  const m2=s.match(/^(\d{3,4})$/);
-  if(m2){
-    const raw=m2[1].padStart(4,'0');
-    const hh=parseInt(raw.slice(0,2),10);
-    const mm=parseInt(raw.slice(2,4),10);
-    if(Number.isFinite(hh)&&Number.isFinite(mm)&&hh>=0&&hh<=23&&mm>=0&&mm<=59){
-      return `${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}`;
-    }
-  }
-  return '';
-}
-function nowTimeHM(){
-  const d=new Date();
-  return `${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-}
-function txSortMs(t){
-  const date=String(t?.date||'').slice(0,10);
-  if(!date) return 0;
-  const time=normTime(t?.time)||'12:00';
-  const ms=new Date(`${date}T${time}:00`).getTime();
-  return Number.isFinite(ms)?ms:0;
-}
-function cmpTxDTDesc(a,b){ return txSortMs(b)-txSortMs(a) || normId(b.id).localeCompare(normId(a.id)); }
-function cmpTxDTAsc(a,b){ return txSortMs(a)-txSortMs(b) || normId(a.id).localeCompare(normId(b.id)); }
-
-function fmtDate(d){ if(!d) return ''; const y=d.getFullYear(), m=String(d.getMonth()+1).padStart(2,'0'), dd=String(d.getDate()).padStart(2,'0'); return `${y}-${m}-${dd}`; }
-function resolveCol(v){ if(!v || !v.startsWith('var(')) return v; const s=getComputedStyle(document.documentElement).getPropertyValue(v.replace(/^var\(|\)$/g,'')).trim(); return s||v; }
-
-/* ── DB helpers (backward compatible schema) ── */
-function _isMissingCol(err,col){
-  const msg=((err?.message||'')+' '+(err?.details||'')+' '+(err?.hint||'')).toLowerCase();
-  const c=String(col||'').toLowerCase();
-  return err?.code==='42703' || msg.includes(`column \"${c}`) || msg.includes(`column ${c}`) || msg.includes(`${c}\" does not exist`);
-}
-let _warnedMissingTimeCol=false;
-function _warnMissingTimeCol(){
-  if(_warnedMissingTimeCol) return;
-  _warnedMissingTimeCol=true;
-  try{ toast("⚠️ Schema DB non aggiornato: manca transactions.time. Aggiorna lo schema SQL (v4) per salvare l'orario.",'warn'); }catch(e){}
-}
-async function dbInsertTxRow(row){
-  let res=await db.from('transactions').insert([row]).select();
-  if(res?.error && _isMissingCol(res.error,'time')){
-    _warnMissingTimeCol();
-    const r={...row}; delete r.time;
-    res=await db.from('transactions').insert([r]).select();
-  }
-  return res;
-}
-async function dbUpdateTxRow(id, patch){
-  let res=await db.from('transactions').update(patch).eq('id',id).select();
-  if(res?.error && _isMissingCol(res.error,'time')){
-    _warnMissingTimeCol();
-    const p={...patch}; delete p.time;
-    res=await db.from('transactions').update(p).eq('id',id).select();
-  }
-  return res;
-}
-
-/* ── DB payload: one row for normal tx, called per-row for giro ── */
-function toDbPayload(t, overrideType, overrideDesc){
-  return {
-    type:        overrideType || (t.type==='transfer'?'expense':t.type),
-    amount:      parseFloat(t.amount)||0,
-    date:        t.date,
-    time:        normTime(t.time)||null,
-    category_id: t.category_id||'other',
-    description: overrideDesc!=null ? overrideDesc : (t.description||''),
-    account:     t.account||'Principale',
-    recurring:   false,
-  };
-}
-
-/* ── Reconstruct transfers from [GIRO:uuid] pairs ── */
-function processDbRows(rows){
-  const giroMap={};
-  const normal=[];
-  rows.forEach(row=>{
-    const m=(row.description||'').match(/^\[GIRO:([^\]]+)\](.*)/);
-    if(m){
-      const ref=m[1]; const desc=m[2].trim();
-      if(!giroMap[ref]) giroMap[ref]={};
-      if(row.type==='expense') giroMap[ref].out={...row,description:desc};
-      else                     giroMap[ref].in={...row,description:desc};
-    } else normal.push(row);
-  });
-  const result=normal.map(r=>{
-    const local=(S._localMeta||{})[r.id]||{};
-    return {...r, time:r.time||null, account_to:null, tags:local.tags||'[]'};
-  });
-  Object.entries(giroMap).forEach(([ref,{out,inn}])=>{
-    if(out&&inn){
-      result.push({
-        id:out.id, _partner_id:inn.id,
-        type:'transfer',
-        amount:out.amount,
-        date:out.date,
-        time:out.time||null,
-        category_id:out.category_id||'other',
-        description:out.description||`Giro ${out.account}→${inn.account}`,
-        account:out.account,
-        account_to:inn.account,
-        tags:'[]',
-        _transfer_ref:ref,
-      });
-    } else {
-      // orphan row — treat as normal
-      const r=out||inn; if(r) result.push({...r,time:r.time||null,account_to:null,tags:'[]'});
-    }
-  });
-  return result;
-}
-
-function fromDbRow(row){
-  const local=(S._localMeta||{})[row.id]||{};
-  return {
-    id:row.id, type:row.type||'expense', amount:row.amount,
-    date:row.date, time:row.time||null, category_id:row.category_id||'other',
-    description:row.description||'', account:row.account||'Principale',
-    account_to:local.account_to||null, tags:local.tags||'[]',
-  };
-}
+   MONEY PRO X — Main Application Logic
+   ============================================================ */
 
 function saveTxLocal(payload){
-  if(S.editId){
-    const i=S.txs.findIndex(x=>x.id===S.editId);
-    if(i>=0) S.txs[i]=Object.assign({},S.txs[i],payload,{id:S.editId});
+  if(AppState.editId){
+    const i=AppState.transactions.findIndex(x=>x.id===AppState.editId);
+    if(i>=0) AppState.transactions[i]=Object.assign({},AppState.transactions[i],payload,{id:AppState.editId});
   } else {
     payload.id='local_'+Date.now()+'_'+Math.random().toString(36).slice(2,7);
-    S.txs.push(payload);
+    AppState.transactions.push(payload);
   }
-  saveTxs();
+  saveTransactions();
 }
 
 async function saveTx(e){
   e.preventDefault(); haptic();
-  const isTransfer=(S.fType==='transfer');
-  const accFrom=document.getElementById('txAccFrom').value;
-  const accTo  =document.getElementById('txAccTo').value;
-  if(isTransfer&&accFrom===accTo){toast('Scegli due conti diversi','error');return;}
-  const amt=parseFloat(document.getElementById('txAmt').value);
-  if(isNaN(amt)||amt<=0){toast('Inserisci un importo valido','error');return;}
-
-  const tags=isTransfer?'[]':JSON.stringify(Array.from(document.querySelectorAll('.tbtn.on')).map(b=>b.dataset.tag));
-  const payload={
-    type:S.fType, amount:amt,
-    date:document.getElementById('txDate').value,
-    time:document.getElementById('txTime')?.value||'',
-    category_id:isTransfer?'other':(document.getElementById('txCat').value||'other'),
-    description:document.getElementById('txDesc').value.trim()||(isTransfer?`Giro ${accFrom}→${accTo}`:''),
-    account:isTransfer?accFrom:(document.getElementById('txAcc').value||(CFG._accounts?.[0]?.name||'Principale')),
-    account_to:isTransfer?accTo:null, tags,
-  };
-
-  if(OFFLINE||!db){
-    saveTxLocal(payload);
-    toast(S.editId?'Aggiornato ✓':(isTransfer?`Giro ${fmt(amt)} ✓`:'Salvato ✓'),'success');
-    try{
-      if(payload.type==='transfer'){ DBS.updateAccountBalance(payload.account); if(payload.account_to) DBS.updateAccountBalance(payload.account_to); }
-      else DBS.updateAccountBalance(payload.account);
-    }catch(e){}
-    closeAll(); renderAll(); if(!S.editId) checkAch();
+  if(!hasAccounts()){
+    toast('Crea prima un conto','warn');
+    openAccountSetup();
     return;
   }
+  showLoader();
+  try {
+    const isTransfer=(AppState.fType==='transfer');
+    const accFrom=document.getElementById('txAccFrom').value;
+    const accTo  =document.getElementById('txAccTo').value;
+    if(isTransfer&&accFrom===accTo){toast('Scegli due conti diversi','error');return;}
+    const amt=parseFloat(document.getElementById('txAmt').value);
+    if(isNaN(amt)||amt<=0){toast('Inserisci un importo valido','error');return;}
 
-  try{
+    const tags=isTransfer?'[]':JSON.stringify(Array.from(document.querySelectorAll('.tbtn.on')).map(b=>b.dataset.tag));
+    const payload={
+      type:AppState.fType, amount:amt,
+      date:document.getElementById('txDate').value,
+      time:document.getElementById('txTime')?.value||'',
+      category_id:isTransfer?'other':(document.getElementById('txCat').value||'other'),
+      description:document.getElementById('txDesc').value.trim()||(isTransfer?`Giro ${accFrom}→${accTo}`:''),
+      account:isTransfer?accFrom:(document.getElementById('txAcc').value||getDefaultAccountName()),
+      account_to:isTransfer?accTo:null, tags,
+    };
+    if(!payload.account){ toast('Seleziona un conto','error'); return; }
+
+    if(OFFLINE||!db){
+      saveTxLocal(payload);
+      toast(AppState.editId?'Aggiornato ✓':(isTransfer?`Giro ${fmt(amt)} ✓`:'Salvato ✓'),'success');
+      try {
+        if (payload.type === 'transfer') { await DatabaseService.updateAccountBalance(payload.account); if (payload.account_to) await DatabaseService.updateAccountBalance(payload.account_to); }
+        else await DatabaseService.updateAccountBalance(payload.account);
+      } catch (e) {}
+      return;
+    }
+
     if(isTransfer){
       // — TWO rows in DB with [GIRO:uuid] prefix —
       const ref=genUUID();
@@ -215,19 +58,18 @@ async function saveTx(e){
       const rowOut=toDbPayload(payload,'expense',`[GIRO:${ref}] ${desc}`);
       const rowIn ={...toDbPayload(payload,'income', `[GIRO:${ref}] ${desc}`), account:accTo};
 
-      if(S.editId){
-        // find partner and delete both first
-        const existing=S.txs.find(x=>x.id===S.editId);
+      if(AppState.editId){
+        const existing=AppState.transactions.find(x=>x.id===AppState.editId);
         const oldRef=existing?._transfer_ref;
         if(oldRef){
           await db.from('transactions').delete().like('description',`[GIRO:${oldRef}]%`);
         } else if(existing?._partner_id){
           await Promise.all([
-            db.from('transactions').delete().eq('id',S.editId),
+            db.from('transactions').delete().eq('id',AppState.editId),
             db.from('transactions').delete().eq('id',existing._partner_id),
           ]);
         } else {
-          await db.from('transactions').delete().eq('id',S.editId);
+          await db.from('transactions').delete().eq('id',AppState.editId);
         }
       }
 
@@ -242,102 +84,108 @@ async function saveTx(e){
         account:accFrom, account_to:accTo, tags:'[]',
         _transfer_ref:ref,
       };
-      if(S.editId){ const i=S.txs.findIndex(x=>x.id===S.editId); if(i>=0) S.txs[i]=merged; else S.txs.push(merged); }
-      else S.txs.push(merged);
-      saveTxs();
+      if(AppState.editId){ const i=AppState.transactions.findIndex(x=>x.id===AppState.editId); if(i>=0) AppState.transactions[i]=merged; else AppState.transactions.push(merged); }
+      else AppState.transactions.push(merged);
+      saveTransactions();
       toast(`Giro ${fmt(amt)} salvato ✓`,'success');
-      // update both account balances
-      if(!OFFLINE&&db){ DBS.updateAccountBalance(accFrom); DBS.updateAccountBalance(accTo); }
+      if(!OFFLINE&&db){ await DatabaseService.updateAccountBalance(accFrom); await DatabaseService.updateAccountBalance(accTo); }
 
     } else {
       // — Normal transaction —
       const dbP=toDbPayload(payload);
       let result;
-      if(S.editId){ result=await dbUpdateTxRow(S.editId, dbP); }
+      if(AppState.editId){ result=await dbUpdateTxRow(AppState.editId, dbP); }
       else         { result=await dbInsertTxRow(dbP); }
       if(result.error) throw result.error;
-      const savedId=S.editId||(result.data&&result.data[0]?.id);
+      const savedId=AppState.editId||(result.data&&result.data[0]?.id);
       if(savedId){
         try{
-          if(payload.account_to||tags!=='[]') await DBS.saveTxMeta(savedId,{account_to:payload.account_to,tags});
-          else await DBS.deleteTxMeta(savedId);
+          if(payload.account_to||tags!=='[]') await DatabaseService.saveTxMeta(savedId,{account_to:payload.account_to,tags});
+          else await DatabaseService.deleteTxMeta(savedId);
         }catch(e){ console.warn('txmeta.save (non-blocking)',e); }
       }
       if(savedId){
         const row={id:savedId,...payload};
-        if(S.editId){ const i=S.txs.findIndex(x=>x.id===S.editId); if(i>=0) S.txs[i]=row; }
-        else S.txs.push(row);
-        saveTxs();
+        if(AppState.editId){ const i=AppState.transactions.findIndex(x=>x.id===AppState.editId); if(i>=0) AppState.transactions[i]=row; }
+        else AppState.transactions.push(row);
+        saveTransactions();
       }
-      toast(S.editId?'Aggiornato ✓':'Salvato ✓','success');
-      // update account balance
-      if(!OFFLINE&&db) DBS.updateAccountBalance(payload.account);
+      toast(AppState.editId?'Aggiornato ✓':'Salvato ✓','success');
+      if(!OFFLINE&&db) await DatabaseService.updateAccountBalance(payload.account);
     }
-
-    closeAll(); renderAll(); if(!S.editId) checkAch();
   }catch(err){
     console.error('saveTx error:',err);
     saveTxLocal(payload);
     toast(`Salvato localmente (${err.message||'errore sync'})`,'warn');
-    try{
-      if(payload.type==='transfer'){ DBS.updateAccountBalance(payload.account); if(payload.account_to) DBS.updateAccountBalance(payload.account_to); }
-      else DBS.updateAccountBalance(payload.account);
-    }catch(e){}
-    closeAll(); renderAll(); if(!S.editId) checkAch();
+    try {
+      if (payload.type === 'transfer') { await DatabaseService.updateAccountBalance(payload.account); if (payload.account_to) await DatabaseService.updateAccountBalance(payload.account_to); }
+      else await DatabaseService.updateAccountBalance(payload.account);
+    } catch (e) {}
+  } finally {
+    hideLoader();
+    closeAll(); renderAll(); if(!AppState.editId) checkAch();
   }
 }
 
 async function deleteTx(id){
   haptic();
-  const t=S.txs.find(x=>x.id===id); if(!t) return;
-  S.undoQ.push(JSON.parse(JSON.stringify(t)));
-  // remove both halves of a transfer
-  if(t.type==='transfer'&&t._partner_id){
-    S.txs=S.txs.filter(x=>x.id!==id&&x.id!==t._partner_id);
-  } else {
-    S.txs=S.txs.filter(x=>x.id!==id);
-  }
-  saveTxs();
-  const btn=document.getElementById('undoBtn');
-  btn.classList.remove('hidden');
-  clearTimeout(S._undoTimer);
-  S._undoTimer=setTimeout(()=>btn.classList.add('hidden'),8000);
-  toast('Eliminato — <b>Annulla</b> entro 8s','warn');
-  renderAll();
-  if(!OFFLINE&&db){
+  showLoader();
+  try {
+    const t=AppState.transactions.find(x=>x.id===id); if(!t) return;
+    AppState.undoQ.push(JSON.parse(JSON.stringify(t)));
+    // remove both halves of a transfer
+    if(t.type==='transfer'&&t._partner_id){
+      AppState.transactions=AppState.transactions.filter(x=>x.id!==id&&x.id!==t._partner_id);
+    } else {
+      AppState.transactions=AppState.transactions.filter(x=>x.id!==id);
+    }
+    saveTransactions();
+    const btn=document.getElementById('undoBtn');
+    if(btn){
+      btn.classList.remove('hidden');
+      clearTimeout(AppState._undoTimer);
+      AppState._undoTimer=setTimeout(()=>btn.classList.add('hidden'),8000);
+    }
+    toast('Eliminato — <b>Annulla</b> entro 8s','warn');
+    
+    if(!OFFLINE&&db){
+      try{
+        if(t.type==='transfer'&&t._transfer_ref){
+          await db.from('transactions').delete().like('description',`[GIRO:${t._transfer_ref}]%`);
+        } else if(t.type==='transfer'&&t._partner_id){
+          await Promise.all([
+            db.from('transactions').delete().eq('id',id),
+            db.from('transactions').delete().eq('id',t._partner_id),
+          ]);
+        } else {
+          await db.from('transactions').delete().eq('id',id);
+        }
+      }catch(e){ console.warn('deleteTx DB',e); }
+      try{
+        await DatabaseService.deleteTxMeta(id);
+        if(t._partner_id) await DatabaseService.deleteTxMeta(t._partner_id);
+      }catch(e){}
+    }
+    // refresh balance for affected account(s) (works offline too)
     try{
-      if(t.type==='transfer'&&t._transfer_ref){
-        await db.from('transactions').delete().like('description',`[GIRO:${t._transfer_ref}]%`);
-      } else if(t.type==='transfer'&&t._partner_id){
-        await Promise.all([
-          db.from('transactions').delete().eq('id',id),
-          db.from('transactions').delete().eq('id',t._partner_id),
-        ]);
-      } else {
-        await db.from('transactions').delete().eq('id',id);
-      }
-    }catch(e){ console.warn('deleteTx DB',e); }
-    try{
-      await DBS.deleteTxMeta(id);
-      if(t._partner_id) await DBS.deleteTxMeta(t._partner_id);
+      if(t.type==='transfer'){ await DatabaseService.updateAccountBalance(t.account); if(t.account_to) await DatabaseService.updateAccountBalance(t.account_to); }
+      else await DatabaseService.updateAccountBalance(t.account);
     }catch(e){}
+  } finally {
+    hideLoader();
+    renderAll();
   }
-  // refresh balance for affected account(s) (works offline too)
-  try{
-    if(t.type==='transfer'){ DBS.updateAccountBalance(t.account); if(t.account_to) DBS.updateAccountBalance(t.account_to); }
-    else DBS.updateAccountBalance(t.account);
-  }catch(e){}
 }
 
 async function undoTx(){
-  const t=S.undoQ.pop(); if(!t) return;
-  haptic(); S.txs.push(t); saveTxs();
+  const t=AppState.undoQ.pop(); if(!t) return;
+  haptic(); AppState.transactions.push(t); saveTransactions();
   document.getElementById('undoBtn').classList.add('hidden');
   toast('Azione annullata ✓','success');
   renderAll();
   try{
-    if(t.type==='transfer'){ DBS.updateAccountBalance(t.account); if(t.account_to) DBS.updateAccountBalance(t.account_to); }
-    else DBS.updateAccountBalance(t.account);
+    if(t.type==='transfer'){ DatabaseService.updateAccountBalance(t.account); if(t.account_to) DatabaseService.updateAccountBalance(t.account_to); }
+    else DatabaseService.updateAccountBalance(t.account);
   }catch(e){}
   if(!OFFLINE&&db){
     try{
@@ -360,12 +208,12 @@ async function undoTx(){
         try{
           const tags=t.tags||'[]';
           const account_to=t.account_to||null;
-          if(newId && (account_to||tags!=='[]')) await DBS.saveTxMeta(newId,{account_to,tags});
+          if(newId && (account_to||tags!=='[]')) await DatabaseService.saveTxMeta(newId,{account_to,tags});
         }catch(e){}
       }
-      saveTxs();
-      if(t.type==='transfer'){ DBS.updateAccountBalance(t.account); if(t.account_to) DBS.updateAccountBalance(t.account_to); }
-      else DBS.updateAccountBalance(t.account);
+      saveTransactions();
+      if (t.type === 'transfer') { await DatabaseService.updateAccountBalance(t.account); if (t.account_to) await DatabaseService.updateAccountBalance(t.account_to); }
+      else await DatabaseService.updateAccountBalance(t.account);
       renderAll(); // refresh click handlers with updated ids
     }catch(e){ console.warn('undoTx DB',e); }
   }
@@ -373,17 +221,17 @@ async function undoTx(){
 
 async function dupTx(id){
   haptic();
-  const t=S.txs.find(x=>x.id===id); if(!t) return;
+  const t=AppState.transactions.find(x=>x.id===id); if(!t) return;
   const nt={...t}; delete nt.id; delete nt._partner_id; delete nt._transfer_ref;
   nt.date=fmtDate(new Date());
   nt.time=nowTimeHM();
   const tempId='local_'+Date.now()+'_dup';
   nt.id=tempId;
-  S.txs.push(nt); saveTxs();
+  AppState.transactions.push(nt); saveTransactions();
   toast('Duplicato ✓','success'); renderAll();
   try{
-    if(nt.type==='transfer'){ DBS.updateAccountBalance(nt.account); if(nt.account_to) DBS.updateAccountBalance(nt.account_to); }
-    else DBS.updateAccountBalance(nt.account);
+    if(nt.type==='transfer'){ DatabaseService.updateAccountBalance(nt.account); if(nt.account_to) DatabaseService.updateAccountBalance(nt.account_to); }
+    else DatabaseService.updateAccountBalance(nt.account);
   }catch(e){}
   if(!OFFLINE&&db){
     try{
@@ -403,25 +251,25 @@ async function dupTx(id){
           account:nt.account, account_to:nt.account_to, tags:'[]',
           _transfer_ref:ref,
         };
-        const i=S.txs.findIndex(x=>x.id===tempId);
-        if(i>=0) S.txs[i]=merged;
-        saveTxs();
-        DBS.updateAccountBalance(nt.account); if(nt.account_to) DBS.updateAccountBalance(nt.account_to);
+        const i=AppState.transactions.findIndex(x=>x.id===tempId);
+        if(i>=0) AppState.transactions[i]=merged;
+        saveTransactions();
+        await DatabaseService.updateAccountBalance(nt.account); if(nt.account_to) await DatabaseService.updateAccountBalance(nt.account_to);
         renderAll(); // refresh click handlers with updated ids
       } else {
         const res=await dbInsertTxRow(toDbPayload(nt));
         if(res.error) throw res.error;
         const newId=res.data?.[0]?.id;
         if(newId){
-          const i=S.txs.findIndex(x=>x.id===tempId);
-          if(i>=0) S.txs[i].id=newId;
+          const i=AppState.transactions.findIndex(x=>x.id===tempId);
+          if(i>=0) AppState.transactions[i].id=newId;
           try{
             const tags=nt.tags||'[]';
             const account_to=nt.account_to||null;
-          if(account_to||tags!=='[]') await DBS.saveTxMeta(newId,{account_to,tags});
+          if(account_to||tags!=='[]') await DatabaseService.saveTxMeta(newId,{account_to,tags});
           }catch(e){}
-          saveTxs();
-          DBS.updateAccountBalance(nt.account);
+          saveTransactions();
+          await DatabaseService.updateAccountBalance(nt.account);
           renderAll(); // refresh click handlers with updated ids
         }
       }
@@ -431,7 +279,7 @@ async function dupTx(id){
 
 async function loadData(force=false){
   if(OFFLINE||!db){ renderAll(); return; }
-  const localHas=(()=>{ try{ return (loadTxs()||[]).length>0; }catch(e){ return false; } })();
+  const localHas=(()=>{ try{ return (loadTransactions()||[]).length>0; }catch(e){ return false; } })();
   updateSyncStatus('loading');
   try{
     let data=null, error=null;
@@ -457,13 +305,13 @@ async function loadData(force=false){
       renderAll();
       return;
     }
-    S.txs=processDbRows(data||[]);
-    saveTxs();
+    AppState.transactions=processDbRows(data||[]);
+    saveTransactions();
     renderAll();
     updateSyncStatus('ok');
   }catch(err){
     console.error('loadData error:',err);
-    if(!S.txs.length) S.txs=loadTxs();
+    if(!AppState.transactions.length) AppState.transactions=loadTransactions();
     renderAll(); updateSyncStatus('error');
     toast(`Errore sync: ${err.message||err.code||'controlla URL/chiave'}`,'error');
   }
@@ -472,33 +320,7 @@ async function loadData(force=false){
 /* ============================================================
    STATE & CONFIG
 ============================================================ */
-let S={
-  txs:[], charts:{}, fType:'expense',
-  viewDate:new Date(), editId:null,
-  wFilter:'all', txFilter:'all',
-  selTags:[], period:'month',
-  calcExpr:'', calcVal:0, calcDisp:'0',
-  advOpen:false, undoQ:[],
-  splitN:2,
-  pinBuffer:'',
-  layoutMode:false,
-  _layoutDrag:null,
-  _layoutOverId:null,
-};
-let CFG={
-  theme:'system', currency:'€',
-  wallets:['Principale','Contanti','Risparmi'],
-  goalName:'', goalVal:'', color:'#0066FF',
-  budgets:{}, ach:{},
-  layout:{},
-  templates:[], notes:[],
-  pinEnabled:false, pin:'',
-  showBalance:true,
-  defaultWallet:'',
-  recurringTxs:[],
-  fx:{ EUR:1, USD:1.08, GBP:0.86, JPY:163, CHF:0.96, CAD:1.47 },
-  fxUpdated:null,
-};
+// State lives in `AppState` + `UserConfig` (initialized in db.js).
 
 /* ============================================================
    CATEGORIES
@@ -574,21 +396,7 @@ function renderAccIcon(acc, size=26, radius=8) {
   </div>`;
 }
 
-const CATS={
-
-  food:     {l:'Cibo & Rist.',   ic:'utensils',     col:'#FF9500',bg:'rgba(255,149,0,.12)',   kw:['spesa','ristorante','pizza','bar','caffè','paninoteca','gelato','cibo','lidl','esselunga','conad','carrefour','supermercato']},
-  transport:{l:'Trasporti',      ic:'car',           col:'#FF3B5C',bg:'rgba(255,59,92,.12)',   kw:['benzina','treno','bus','taxi','uber','parcheggio','metro','volo','atm','trenitalia','frecciarossa','autostrada']},
-  home:     {l:'Casa & Utenze',  ic:'home',         col:'#5AC8FA',bg:'rgba(90,200,250,.12)',  kw:['affitto','luce','gas','acqua','bolletta','condominio','wifi','imu','enel','eni','hera','tim','vodafone']},
-  shopping: {l:'Shopping',       ic:'shopping-bag', col:'#AF52DE',bg:'rgba(175,82,222,.12)', kw:['amazon','zara','vestiti','scarpe','mall','ikea','primark','zalando','h&m','decathlon']},
-  health:   {l:'Salute & Sport', ic:'heart-pulse',  col:'#FF2D55',bg:'rgba(255,45,85,.12)',  kw:['farmacia','medico','palestra','dentista','sport','gym','dottore','ospedale','analisi']},
-  entertain:{l:'Svago',          ic:'tv',           col:'#FF6B00',bg:'rgba(255,107,0,.12)',  kw:['cinema','netflix','spotify','disney','concerto','teatro','giochi','playstation','steam']},
-  travel:   {l:'Viaggi',         ic:'plane',        col:'#00C896',bg:'rgba(0,200,150,.12)',  kw:['hotel','airbnb','booking','vacanza','viaggio','ryanair','easyjet','aeroporto']},
-  education:{l:'Istruzione',     ic:'book-open',    col:'#4CAF50',bg:'rgba(76,175,80,.12)',  kw:['libro','corso','università','scuola','udemy','coursera']},
-  salary:   {l:'Stipendio',      ic:'banknote',     col:'#00C896',bg:'rgba(0,200,150,.12)',  kw:['stipendio','paga','bonifico','busta','cedolino']},
-  subscript:{l:'Abbonamenti',    ic:'refresh-cw',   col:'#7C3AED',bg:'rgba(124,58,237,.12)',kw:['abbonamento','mensile','annual','subscription','piano']},
-  invest:   {l:'Investimenti',   ic:'trending-up',  col:'#00C896',bg:'rgba(0,200,150,.12)',  kw:['btp','azioni','etf','crypto','trading','fondo']},
-  other:    {l:'Altro',          ic:'tag',           col:'#6B7280',bg:'rgba(107,114,128,.12)',kw:[]},
-};
+// Categories live in `public/legacy/db.js` as `Categories` (and `CATS` alias).
 
 /* ============================================================
    ACHIEVEMENTS
@@ -598,7 +406,7 @@ const ACHS=[
   {id:'ten',     e:'📊',t:'10 Movimenti',        fn:x=>x.length>=10},
   {id:'fifty',   e:'🏆',t:'50 Movimenti',        fn:x=>x.length>=50},
   {id:'hundred', e:'💯',t:'100 Movimenti',       fn:x=>x.length>=100},
-  {id:'saver',   e:'💰',t:'Risparmio >20%',      fn:(x,c)=>srFor(x,new Date())>20},
+  {id:'saver',   e:'💰',t:'Risparmio >20%',      fn:(x,c)=>savingsRateFor(x,new Date())>20},
   {id:'multw',   e:'🏦',t:'3 Wallet Attivi',     fn:(_,c)=>c.wallets.length>=3},
   {id:'budget',  e:'⚡',t:'Budget Impostato',    fn:(_,c)=>Object.keys(c.budgets||{}).length>0},
   {id:'bigIn',   e:'💎',t:'Entrata 1000€+',      fn:x=>x.some(t=>t.type==='income'&&+t.amount>=1000)},
@@ -613,803 +421,124 @@ const ACHS=[
 
 /* ============================================================
    PERSIST HELPERS — legacy compat (scrittura locale immediata)
-   Ogni saveCfg() ora pusha al DB in background via DBS
+   Ogni saveConfig() ora pusha al DB in background via DBS
 ============================================================ */
-function saveTxs(){
-  localStorage.setItem('mpxData2', JSON.stringify(S.txs));
-  localStorage.setItem('mpxMeta2', JSON.stringify(S._localMeta||{}));
-}
-function saveCfg(){
-  localStorage.setItem('mpxCfg2', JSON.stringify(CFG));
-  if(!OFFLINE && db) DBS.pushSettings().catch(()=>{});
-}
-function loadTxs(){ try{ return JSON.parse(localStorage.getItem('mpxData2')||'[]'); }catch(e){ return []; } }
-function loadMeta(){ try{ return JSON.parse(localStorage.getItem('mpxMeta2')||'{}'); }catch(e){ return {}; } }
-function loadCfg(){ try{ return JSON.parse(localStorage.getItem('mpxCfg2')||'{}'); }catch(e){ return {}; } }
+// Persistence helpers moved to db.js
 
 /* ============================================================
    SQL SCHEMA — 10 tabelle complete
 ============================================================ */
-const SQL_SCHEMA=`-- ============================================================
--- MONEY PRO X — Schema Supabase (v4, robust)
--- Incolla nel SQL Editor → Esegui
--- ============================================================
-
--- 0) Extensions (needed for gen_random_uuid)
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
-
--- 1) Transactions
-CREATE TABLE IF NOT EXISTS transactions (
-  id          uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  type        text NOT NULL CHECK (type IN ('expense','income','transfer')),
-  amount      numeric(12,2) NOT NULL CHECK (amount > 0),
-  category_id text DEFAULT 'other',
-  description text DEFAULT '',
-  date        date NOT NULL,
-  time        time,
-  account     text DEFAULT 'Principale',
-  recurring   boolean DEFAULT false,
-  created_at  timestamptz DEFAULT now()
-);
--- v4 migration (safe to re-run)
-ALTER TABLE transactions ADD COLUMN IF NOT EXISTS time time;
-CREATE INDEX IF NOT EXISTS transactions_date_idx ON transactions(date DESC);
-CREATE INDEX IF NOT EXISTS transactions_date_time_idx ON transactions(date DESC, time DESC);
-CREATE INDEX IF NOT EXISTS transactions_account_idx ON transactions(account);
-CREATE INDEX IF NOT EXISTS transactions_category_idx ON transactions(category_id);
-
--- 1b) Transaction metadata (tags, extra fields)
-CREATE TABLE IF NOT EXISTS transaction_meta (
-  tx_id      uuid PRIMARY KEY REFERENCES transactions(id) ON DELETE CASCADE,
-  tags       text DEFAULT '[]',
-  account_to text,
-  updated_at timestamptz DEFAULT now()
-);
-
--- 2) Accounts
-CREATE TABLE IF NOT EXISTS accounts (
-  id              uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  name            text NOT NULL UNIQUE,
-  type            text DEFAULT 'checking',
-  color           text DEFAULT '#0066FF',
-  icon            text DEFAULT 'wallet',
-  initial_balance numeric(12,2) DEFAULT 0,
-  current_balance numeric(12,2) DEFAULT 0,
-  sort_order      integer DEFAULT 0,
-  created_at      timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS accounts_sort_order_idx ON accounts(sort_order);
-
--- 3) Custom categories
-CREATE TABLE IF NOT EXISTS categories (
-  id         uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  key        text NOT NULL UNIQUE,
-  label      text NOT NULL,
-  icon       text DEFAULT 'tag',
-  color      text DEFAULT '#6B7280',
-  background text DEFAULT 'rgba(107,114,128,.12)',
-  sort_order integer DEFAULT 0,
-  created_at timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS categories_sort_order_idx ON categories(sort_order);
-
--- 4) Budgets
-CREATE TABLE IF NOT EXISTS budgets (
-  id           uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  category_key text NOT NULL UNIQUE,
-  amount       numeric(12,2) NOT NULL CHECK (amount > 0),
-  period       text DEFAULT 'monthly',
-  updated_at   timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS budgets_category_key_idx ON budgets(category_key);
-
--- 5) Goals
-CREATE TABLE IF NOT EXISTS goals (
-  id         uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  name       text NOT NULL,
-  target     numeric(12,2) NOT NULL CHECK (target > 0),
-  current    numeric(12,2) DEFAULT 0,
-  deadline   date,
-  completed  boolean DEFAULT false,
-  color      text DEFAULT '#0066FF',
-  created_at timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS goals_created_at_idx ON goals(created_at DESC);
-
--- 6) Debts & Credits
-CREATE TABLE IF NOT EXISTS debts (
-  id         uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  person     text NOT NULL,
-  amount     numeric(12,2) NOT NULL CHECK (amount > 0),
-  type       text NOT NULL CHECK (type IN ('borrow','lend')),
-  note       text DEFAULT '',
-  date       date NOT NULL,
-  settled    boolean DEFAULT false,
-  created_at timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS debts_person_idx ON debts(person);
-CREATE INDEX IF NOT EXISTS debts_settled_idx ON debts(settled);
-
--- 7) Subscriptions
-CREATE TABLE IF NOT EXISTS subscriptions (
-  id         uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  name       text NOT NULL,
-  amount     numeric(12,2) NOT NULL CHECK (amount > 0),
-  frequency  text DEFAULT 'monthly' CHECK (frequency IN ('monthly','yearly','weekly')),
-  next_date  date,
-  active     boolean DEFAULT true,
-  color      text,
-  created_at timestamptz DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS subscriptions_next_date_idx ON subscriptions(next_date);
-CREATE INDEX IF NOT EXISTS subscriptions_active_idx ON subscriptions(active);
-
--- 8) Transaction templates
-CREATE TABLE IF NOT EXISTS templates (
-  id           uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  name         text NOT NULL,
-  type         text NOT NULL,
-  amount       numeric(12,2),
-  category_key text,
-  account_name text,
-  description  text,
-  tags         text DEFAULT '[]',
-  created_at   timestamptz DEFAULT now()
-);
-
--- 9) Notes / To-Do
-CREATE TABLE IF NOT EXISTS notes (
-  id         uuid DEFAULT gen_random_uuid() PRIMARY KEY,
-  text       text NOT NULL,
-  done       boolean DEFAULT false,
-  date       date NOT NULL,
-  created_at timestamptz DEFAULT now()
-);
-
--- 10) Settings (key-value)
-CREATE TABLE IF NOT EXISTS settings (
-  key        text PRIMARY KEY,
-  value      text,
-  updated_at timestamptz DEFAULT now()
-);`;
-
+/* ── SQL Schema — Managed in db.js ── */
 function copySQLSchema(){
-  navigator.clipboard?.writeText(SQL_SCHEMA).then(()=>toast('Schema copiato ✓','success')).catch(()=>toast('Copia dal box manualmente','warn'));
+  const s = typeof SQL_SCHEMA !== 'undefined' ? SQL_SCHEMA : '';
+  navigator.clipboard?.writeText(s).then(()=>toast('Schema copiato ✓','success')).catch(()=>toast('Copia dal box manualmente','warn'));
 }
 
-/* ============================================================
-   DBS — Database Sync Layer
-   Ogni entità ha: load (DB → memoria + localStorage) e save/delete
-============================================================ */
-const DBS={
 
-  /* ── COLORI ACCOUNT ──────────────────────────────────── */
-  _acColors:['#0066FF','#00C896','#7C3AED','#FF9500','#FF3B5C','#5AC8FA','#FF6B00','#4CAF50'],
-  _acColorIdx:0,
-  nextColor(){ return this._acColors[this._acColorIdx++ % this._acColors.length]; },
-  _iconForType(t){ return {checking:'credit-card',savings:'piggy-bank',cash:'banknote',credit:'credit-card',invest:'trending-up'}[t]||'wallet'; },
+/* DatabaseService sync logic is now in db.js */
 
-  /* ── SETTINGS ────────────────────────────────────────── */
-  async pushSettings(){
-    if(!db) return;
-    const rows=['currency','theme','color','goalName','goalVal','ach','pinEnabled','pin','showBalance','defaultWallet','recurringTxs','fx','lastBackup','fxUpdated','layout']
-      .map(k=>({key:k,value:JSON.stringify(CFG[k]??null),updated_at:new Date().toISOString()}));
-    try{ await db.from('settings').upsert(rows,{onConflict:'key'}); }catch(e){ console.warn('settings.push',e); }
-  },
-  async pullSettings(){
-    if(!db) return false;
-    try{
-      const {data,error}=await db.from('settings').select('key,value');
-      if(error||!data?.length) return false;
-      data.forEach(r=>{ try{ CFG[r.key]=JSON.parse(r.value); }catch(e){ CFG[r.key]=r.value; } });
-      localStorage.setItem('mpxCfg2',JSON.stringify(CFG));
-      return true;
-    }catch(e){ console.warn('settings.pull',e); return false; }
-  },
-
-  /* ── ACCOUNTS ────────────────────────────────────────── */
-  _saveLocal(){ localStorage.setItem('mpx_acc',JSON.stringify(CFG._accounts)); },
-  /* ── BALANCE TRACKING ───────────────────────────────── */
-  computeBalance(accName){
-    const acc=CFG._accounts.find(a=>a.name===accName);
-    let bal=acc?.initialBalance||0;
-    (window.S?.txs||[]).forEach(t=>{
-      const a=+t.amount;
-      if(t.type==='transfer'){
-        if(t.account===accName) bal-=a;
-        if(t.account_to===accName) bal+=a;
-      } else if(t.account===accName){
-        bal+=t.type==='expense'?-a:a;
-      }
-    });
-    return Math.round(bal*100)/100;
-  },
-  async updateAccountBalance(accName){
-    const acc=CFG._accounts?.find(a=>a.name===accName); if(!acc) return;
-    const bal=this.computeBalance(accName);
-    acc.currentBalance=bal;
-    this._saveLocal();
-    if(!db||!acc.id||acc.id.toString().startsWith('lac')) return;
-    try{ await db.from('accounts').update({current_balance:bal}).eq('id',acc.id); }
-    catch(e){ console.warn('balance.update',e); }
-  },
-  async updateAllBalances(){
-    if(!CFG._accounts?.length) return;
-    for(const acc of CFG._accounts) await this.updateAccountBalance(acc.name);
-  },
-
-  async loadAccounts(){
-    // try DB first
-    if(db){
-      try{
-        const {data,error}=await db.from('accounts').select('*').order('sort_order');
-        if(!error && data?.length){
-          CFG._accounts=data.map(r=>({id:r.id,name:r.name,type:r.type||'checking',color:r.color||'#0066FF',icon:r.icon||'wallet',initialBalance:+r.initial_balance||0,currentBalance:r.current_balance!=null?+r.current_balance:undefined}));
-          CFG.wallets=CFG._accounts.map(a=>a.name);
-          this._saveLocal();
-          const b=document.getElementById('accsDbBadge'); if(b) b.classList.remove('hidden');
-          return;
-        }
-      }catch(e){ console.warn('accounts.load DB',e); }
-    }
-    // localStorage fallback
-    try{
-      const lc=JSON.parse(localStorage.getItem('mpx_acc')||'null');
-      if(lc?.length){ CFG._accounts=lc; CFG.wallets=lc.map(a=>a.name); return; }
-    }catch(e){}
-    // defaults
-    const defs=[
-      {id:'lac1',name:'Principale',type:'checking',color:'#0066FF',icon:'credit-card',initialBalance:0},
-      {id:'lac2',name:'Contanti',  type:'cash',    color:'#00C896',icon:'banknote',   initialBalance:0},
-      {id:'lac3',name:'Risparmi',  type:'savings', color:'#7C3AED',icon:'piggy-bank', initialBalance:0},
-    ];
-    CFG._accounts=defs; CFG.wallets=defs.map(a=>a.name); this._saveLocal();
-  },
-  async saveAccount(acc){
-    // local update
-    const idx=CFG._accounts.findIndex(a=>a.id===acc.id);
-    if(idx>=0) CFG._accounts[idx]=acc; else { CFG._accounts.push(acc); }
-    CFG.wallets=CFG._accounts.map(a=>a.name);
-    this._saveLocal();
-    if(!db) return acc;
-    const row={name:acc.name,type:acc.type,color:acc.color,icon:acc.icon,initial_balance:acc.initialBalance||0,sort_order:CFG._accounts.indexOf(acc)};
-    try{
-      const isLocal=!acc.id||acc.id.startsWith('lac');
-      const res=isLocal?await db.from('accounts').insert([row]).select():await db.from('accounts').update(row).eq('id',acc.id).select();
-      if(!res.error && res.data?.[0]){
-        const old=acc.id; acc.id=res.data[0].id;
-        const i=CFG._accounts.findIndex(a=>a.id===old||a.id===res.data[0].id);
-        if(i>=0) CFG._accounts[i].id=acc.id;
-        this._saveLocal();
-      }
-    }catch(e){ console.warn('accounts.save',e); }
-    return acc;
-  },
-  async deleteAccount(id){
-    CFG._accounts=CFG._accounts.filter(a=>a.id!==id);
-    CFG.wallets=CFG._accounts.map(a=>a.name);
-    this._saveLocal();
-    if(!db||id.startsWith('lac')) return;
-    try{ await db.from('accounts').delete().eq('id',id); }catch(e){ console.warn('accounts.delete',e); }
-  },
-  async renameAccount(id,newName,oldName){
-    const acc=CFG._accounts.find(a=>a.id===id); if(!acc) return;
-    acc.name=newName; CFG.wallets=CFG._accounts.map(a=>a.name); this._saveLocal();
-    // rename in transactions too
-    if(!db||id.startsWith('lac')) return;
-    try{
-      await db.from('accounts').update({name:newName}).eq('id',id);
-      // also update transactions that reference the old account name
-      await db.from('transactions').update({account:newName}).eq('account',oldName);
-    }catch(e){ console.warn('accounts.rename',e); }
-  },
-
-  /* ── BUDGETS ──────────────────────────────────────────── */
-  async loadBudgets(){
-    const localHas=(()=>{ try{ return Object.keys(JSON.parse(localStorage.getItem('mpx_bud')||'{}')||{}).length>0; }catch(e){ return false; } })();
-    if(db){
-      try{
-        const {data,error}=await db.from('budgets').select('*');
-        if(!error && data && (data.length||!localHas)){ CFG.budgets={}; data.forEach(r=>CFG.budgets[r.category_key]=+r.amount); localStorage.setItem('mpx_bud',JSON.stringify(CFG.budgets)); return; }
-      }catch(e){ console.warn('budgets.load',e); }
-    }
-    try{ CFG.budgets=JSON.parse(localStorage.getItem('mpx_bud')||'{}'); }catch(e){ CFG.budgets={}; }
-  },
-  async saveBudget(catKey,amount){
-    if(amount&&+amount>0) CFG.budgets[catKey]=+amount; else delete CFG.budgets[catKey];
-    localStorage.setItem('mpx_bud',JSON.stringify(CFG.budgets));
-    if(!db) return;
-    try{
-      if(amount&&+amount>0) await db.from('budgets').upsert({category_key:catKey,amount:+amount,updated_at:new Date().toISOString()},{onConflict:'category_key'});
-      else await db.from('budgets').delete().eq('category_key',catKey);
-    }catch(e){ console.warn('budgets.save',e); }
-  },
-
-  /* ── CATEGORIES ──────────────────────────────────────── */
-  async loadCustomCategories(){
-    if(db){
-      try{
-        const {data,error}=await db.from('categories').select('*').order('sort_order');
-        if(!error && data){ data.forEach(r=>{ if(!CATS[r.key]) CATS[r.key]={l:r.label,ic:r.icon,col:r.color,bg:r.background,kw:[],_dbid:r.id,_custom:true}; }); localStorage.setItem('mpx_cats',JSON.stringify(data)); return; }
-      }catch(e){ console.warn('cats.load',e); }
-    }
-    try{ const lc=JSON.parse(localStorage.getItem('mpx_cats')||'[]'); lc.forEach(r=>{ if(!CATS[r.key]) CATS[r.key]={l:r.label,ic:r.icon,col:r.color,bg:r.background,kw:[],_dbid:r.id,_custom:true}; }); }catch(e){}
-  },
-
-  /* ── NOTES ────────────────────────────────────────────── */
-  _saveNotes(){ localStorage.setItem('mpx_notes',JSON.stringify(CFG.notes)); },
-  async loadNotes(){
-    const localHas=(()=>{ try{ return (JSON.parse(localStorage.getItem('mpx_notes')||'[]')||[]).length>0; }catch(e){ return false; } })();
-    if(db){
-      try{
-        const {data,error}=await db.from('notes').select('*').order('created_at',{ascending:false});
-        if(!error && data && (data.length||!localHas)){ CFG.notes=data.map(r=>({id:r.id,text:r.text,done:r.done,date:r.date})); this._saveNotes(); return; }
-      }catch(e){ console.warn('notes.load',e); }
-    }
-    try{ CFG.notes=JSON.parse(localStorage.getItem('mpx_notes')||'[]'); }catch(e){ CFG.notes=[]; }
-  },
-  async addNote(text){
-    const note={id:'ln'+Date.now(),text,done:false,date:fmtDate(new Date())};
-    CFG.notes.unshift(note); this._saveNotes();
-    if(!db) return note;
-    try{
-      const {data}=await db.from('notes').insert([{text:note.text,done:false,date:note.date}]).select();
-      if(data?.[0]){ CFG.notes[0].id=data[0].id; this._saveNotes(); }
-    }catch(e){ console.warn('notes.add',e); }
-    return note;
-  },
-  async updateNote(id,patch){
-    const n=CFG.notes.find(x=>x.id===id); if(!n) return; Object.assign(n,patch); this._saveNotes();
-    if(!db||id.startsWith('ln')) return;
-    try{ await db.from('notes').update(patch).eq('id',id); }catch(e){ console.warn('notes.update',e); }
-  },
-  async deleteNote(id){
-    CFG.notes=CFG.notes.filter(n=>n.id!==id); this._saveNotes();
-    if(!db||id.toString().startsWith('ln')) return;
-    try{ await db.from('notes').delete().eq('id',id); }catch(e){ console.warn('notes.delete',e); }
-  },
-
-  /* ── TEMPLATES ────────────────────────────────────────── */
-  _saveTpl(){ localStorage.setItem('mpx_tpl',JSON.stringify(CFG.templates)); },
-  async loadTemplates(){
-    const localHas=(()=>{ try{ return (JSON.parse(localStorage.getItem('mpx_tpl')||'[]')||[]).length>0; }catch(e){ return false; } })();
-    if(db){
-      try{
-        const {data,error}=await db.from('templates').select('*').order('created_at',{ascending:false});
-        if(!error && data && (data.length||!localHas)){ CFG.templates=data.map(r=>({id:r.id,name:r.name,type:r.type,amount:+r.amount,category_id:r.category_key||'other',account:r.account_name||'',description:r.description||'',tags:r.tags||'[]'})); this._saveTpl(); return; }
-      }catch(e){ console.warn('templates.load',e); }
-    }
-    try{ CFG.templates=JSON.parse(localStorage.getItem('mpx_tpl')||'[]'); }catch(e){ CFG.templates=[]; }
-  },
-  async addTemplate(tpl){
-    tpl.id='lt'+Date.now(); CFG.templates.unshift(tpl); this._saveTpl();
-    if(!db) return tpl;
-    try{
-      const {data}=await db.from('templates').insert([{name:tpl.name,type:tpl.type,amount:tpl.amount||null,category_key:tpl.category_id||null,account_name:tpl.account||null,description:tpl.description||null,tags:tpl.tags||'[]'}]).select();
-      if(data?.[0]){ CFG.templates[0].id=data[0].id; this._saveTpl(); }
-    }catch(e){ console.warn('templates.add',e); }
-    return tpl;
-  },
-  async deleteTemplate(id){
-    CFG.templates=CFG.templates.filter(t=>t.id!==id); this._saveTpl();
-    if(!db||id.toString().startsWith('lt')) return;
-    try{ await db.from('templates').delete().eq('id',id); }catch(e){ console.warn('templates.delete',e); }
-  },
-
-  /* ── TX META (tags, account_to) ──────────────────────── */
-  _saveTxMeta(){ localStorage.setItem('mpxMeta2',JSON.stringify(S._localMeta||{})); },
-  async loadTxMeta(){
-    if(!S._localMeta) S._localMeta={};
-    if(db){
-      try{
-        const {data,error}=await db.from('transaction_meta').select('*');
-        if(!error && data){
-          data.forEach(r=>{
-            if(!r?.tx_id) return;
-            S._localMeta[r.tx_id]={account_to:r.account_to||null,tags:r.tags||'[]'};
-          });
-          this._saveTxMeta();
-          return;
-        }
-      }catch(e){ console.warn('txmeta.load',e); }
-    }
-  },
-  async saveTxMeta(txId,meta){
-    const id=normId(txId); if(!id) return;
-    if(!S._localMeta) S._localMeta={};
-    const m={account_to:meta?.account_to||null,tags:meta?.tags||'[]'};
-    S._localMeta[id]=m;
-    this._saveTxMeta();
-    if(!db || !isUUID(id)) return;
-    try{
-      await db.from('transaction_meta').upsert({tx_id:id,tags:m.tags,account_to:m.account_to,updated_at:new Date().toISOString()},{onConflict:'tx_id'});
-    }catch(e){ console.warn('txmeta.save',e); }
-  },
-  async deleteTxMeta(txId){
-    const id=normId(txId); if(!id) return;
-    if(S._localMeta) delete S._localMeta[id];
-    this._saveTxMeta();
-    if(!db || !isUUID(id)) return;
-    try{ await db.from('transaction_meta').delete().eq('tx_id',id); }catch(e){ console.warn('txmeta.delete',e); }
-  },
-
-  /* ── GOALS (multipli) ────────────────────────────────── */
-  _saveGoals(){ localStorage.setItem('mpx_goals',JSON.stringify(CFG.goals||[])); },
-  async loadGoals(){
-    const localHas=(()=>{ try{ return (JSON.parse(localStorage.getItem('mpx_goals')||'[]')||[]).length>0; }catch(e){ return false; } })();
-    if(db){
-      try{
-        const {data,error}=await db.from('goals').select('*').order('created_at',{ascending:false});
-        if(!error && data && (data.length||!localHas)){
-          CFG.goals=data.map(r=>({id:normId(r.id),name:r.name,target:+r.target||0,current:+r.current||0,deadline:r.deadline||'',completed:!!r.completed,color:r.color||null}));
-          this._saveGoals();
-          return;
-        }
-      }catch(e){ console.warn('goals.load',e); }
-    }
-    try{
-      const lc=JSON.parse(localStorage.getItem('mpx_goals')||'null');
-      if(lc?.length){ CFG.goals=lc.map(g=>({...(g||{}),id:normId(g.id)})); return; }
-    }catch(e){}
-    CFG.goals=(CFG.goals||[]).map(g=>({...(g||{}),id:normId(g.id)}));
-  },
-  async saveGoal(goal){
-    if(!CFG.goals) CFG.goals=[];
-    const g={...(goal||{})};
-    g.id=normId(g.id)||('lg'+Date.now()+'_'+Math.random().toString(36).slice(2,4));
-    g.name=(g.name||'').trim();
-    g.target=+g.target||0;
-    g.current=Math.max(0,Math.min(g.target||0,+g.current||0));
-    g.deadline=g.deadline||'';
-    g.completed=!!g.completed || (g.target>0 && g.current>=g.target);
-    g.color=g.color||CFG.color||'#0066FF';
-    if(!g.name||!g.target||g.target<=0) return g;
-    const idx=CFG.goals.findIndex(x=>idEq(x.id,g.id));
-    if(idx>=0) CFG.goals[idx]=Object.assign({},CFG.goals[idx],g);
-    else CFG.goals.unshift(g);
-    this._saveGoals();
-    if(!db) return g;
-    try{
-      const row={name:g.name,target:g.target,current:g.current,deadline:g.deadline||null,completed:g.completed,color:g.color||null};
-      if(isUUID(g.id) && !isLocalId(g.id,'lg')){
-        await db.from('goals').upsert({id:g.id,...row},{onConflict:'id'});
-      } else {
-        const {data,error}=await db.from('goals').insert([row]).select();
-        if(error) throw error;
-        if(data?.[0]?.id){
-          const newId=data[0].id;
-          const j=CFG.goals.findIndex(x=>idEq(x.id,g.id));
-          if(j>=0) CFG.goals[j].id=newId;
-          g.id=newId;
-          this._saveGoals();
-        }
-      }
-    }catch(e){ console.warn('goals.save',e); }
-    return g;
-  },
-  async updateGoal(id,patch){
-    const gid=normId(id); if(!gid) return;
-    const idx=(CFG.goals||[]).findIndex(x=>idEq(x.id,gid));
-    if(idx<0) return;
-    CFG.goals[idx]=Object.assign({},CFG.goals[idx],patch||{});
-    const g=CFG.goals[idx];
-    g.target=+g.target||0;
-    g.current=+g.current||0;
-    g.completed=!!g.completed || (g.target>0 && g.current>=g.target);
-    this._saveGoals();
-    if(!db || !isUUID(gid) || isLocalId(gid,'lg')) return;
-    try{
-      const row={};
-      ['name','target','current','deadline','completed','color'].forEach(k=>{ if(patch && k in patch) row[k]=patch[k]; });
-      if('target' in row) row.target=+row.target||0;
-      if('current' in row) row.current=+row.current||0;
-      if('deadline' in row) row.deadline=row.deadline||null;
-      await db.from('goals').update(row).eq('id',gid);
-    }catch(e){ console.warn('goals.update',e); }
-  },
-  async deleteGoal(id){
-    const gid=normId(id); if(!gid) return;
-    CFG.goals=(CFG.goals||[]).filter(x=>!idEq(x.id,gid));
-    this._saveGoals();
-    if(!db || !isUUID(gid) || isLocalId(gid,'lg')) return;
-    try{ await db.from('goals').delete().eq('id',gid); }catch(e){ console.warn('goals.delete',e); }
-  },
-
-  /* ── DEBTS ───────────────────────────────────────────── */
-  _saveDebts(){ localStorage.setItem('mpx_debts',JSON.stringify(CFG.debts||[])); },
-  async loadDebts(){
-    const localHas=(()=>{ try{ return (JSON.parse(localStorage.getItem('mpx_debts')||'[]')||[]).length>0; }catch(e){ return false; } })();
-    if(db){
-      try{
-        const {data,error}=await db.from('debts').select('*').order('created_at',{ascending:false});
-        if(!error && data && (data.length||!localHas)){
-          CFG.debts=data.map(r=>({id:normId(r.id),person:r.person,amount:+r.amount||0,type:r.type,note:r.note||'',date:r.date,settled:!!r.settled}));
-          this._saveDebts();
-          return;
-        }
-      }catch(e){ console.warn('debts.load',e); }
-    }
-    try{
-      const lc=JSON.parse(localStorage.getItem('mpx_debts')||'null');
-      if(lc?.length){ CFG.debts=lc.map(d=>({...(d||{}),id:normId(d.id)})); return; }
-    }catch(e){}
-    CFG.debts=(CFG.debts||[]).map(d=>({...(d||{}),id:normId(d.id)}));
-  },
-  async saveDebt(debt){
-    if(!CFG.debts) CFG.debts=[];
-    const d={...(debt||{})};
-    d.id=normId(d.id)||('ld'+Date.now()+'_'+Math.random().toString(36).slice(2,4));
-    d.person=(d.person||'').trim();
-    d.amount=+d.amount||0;
-    d.type=d.type==='lend'?'lend':'borrow';
-    d.note=d.note||'';
-    d.date=d.date||fmtDate(new Date());
-    d.settled=!!d.settled;
-    if(!d.person||!d.amount||d.amount<=0) return d;
-    const idx=CFG.debts.findIndex(x=>idEq(x.id,d.id));
-    if(idx>=0) CFG.debts[idx]=Object.assign({},CFG.debts[idx],d);
-    else CFG.debts.unshift(d);
-    this._saveDebts();
-    if(!db) return d;
-    try{
-      const row={person:d.person,amount:d.amount,type:d.type,note:d.note,date:d.date,settled:d.settled};
-      if(isUUID(d.id) && !isLocalId(d.id,'ld')){
-        await db.from('debts').upsert({id:d.id,...row},{onConflict:'id'});
-      } else {
-        const {data,error}=await db.from('debts').insert([row]).select();
-        if(error) throw error;
-        if(data?.[0]?.id){
-          const newId=data[0].id;
-          const j=CFG.debts.findIndex(x=>idEq(x.id,d.id));
-          if(j>=0) CFG.debts[j].id=newId;
-          d.id=newId;
-          this._saveDebts();
-        }
-      }
-    }catch(e){ console.warn('debts.save',e); }
-    return d;
-  },
-  async updateDebt(id,patch){
-    const did=normId(id); if(!did) return;
-    const idx=(CFG.debts||[]).findIndex(x=>idEq(x.id,did));
-    if(idx<0) return;
-    CFG.debts[idx]=Object.assign({},CFG.debts[idx],patch||{});
-    const d=CFG.debts[idx];
-    d.amount=+d.amount||0;
-    d.settled=!!d.settled;
-    this._saveDebts();
-    if(!db || !isUUID(did) || isLocalId(did,'ld')) return;
-    try{
-      const row={};
-      ['person','amount','type','note','date','settled'].forEach(k=>{ if(patch && k in patch) row[k]=patch[k]; });
-      if('amount' in row) row.amount=+row.amount||0;
-      await db.from('debts').update(row).eq('id',did);
-    }catch(e){ console.warn('debts.update',e); }
-  },
-  async deleteDebt(id){
-    const did=normId(id); if(!did) return;
-    CFG.debts=(CFG.debts||[]).filter(x=>!idEq(x.id,did));
-    this._saveDebts();
-    if(!db || !isUUID(did) || isLocalId(did,'ld')) return;
-    try{ await db.from('debts').delete().eq('id',did); }catch(e){ console.warn('debts.delete',e); }
-  },
-
-  /* ── SUBSCRIPTIONS ───────────────────────────────────── */
-  _saveSubs(){ localStorage.setItem('mpx_subscriptions',JSON.stringify(CFG.subscriptions||[])); },
-  async loadSubscriptions(){
-    const localHas=(()=>{ try{ return (JSON.parse(localStorage.getItem('mpx_subscriptions')||'[]')||[]).length>0; }catch(e){ return false; } })();
-    if(db){
-      try{
-        const {data,error}=await db.from('subscriptions').select('*').order('created_at',{ascending:false});
-        if(!error && data && (data.length||!localHas)){
-          const today=fmtDate(new Date());
-          CFG.subscriptions=data.map(r=>({
-            id:normId(r.id),
-            name:r.name,
-            amount:+r.amount||0,
-            frequency:r.frequency||r.billing_cycle||r.cycle||'monthly',
-            nextDate:r.next_date||r.next_billing||r.nextDate||today,
-            active:r.active!==false,
-            color:r.color||null,
-          }));
-          this._saveSubs();
-          return;
-        }
-      }catch(e){ console.warn('subs.load',e); }
-    }
-    try{
-      const lc=JSON.parse(localStorage.getItem('mpx_subscriptions')||'null');
-      if(lc?.length){ CFG.subscriptions=lc.map(s=>({...(s||{}),id:normId(s.id)})); return; }
-    }catch(e){}
-    CFG.subscriptions=(CFG.subscriptions||[]).map(s=>({...(s||{}),id:normId(s.id)}));
-  },
-  async saveSub(sub){
-    if(!CFG.subscriptions) CFG.subscriptions=[];
-    const s={...(sub||{})};
-    s.id=normId(s.id)||('ls'+Date.now()+'_'+Math.random().toString(36).slice(2,4));
-    s.name=(s.name||'').trim();
-    s.amount=+s.amount||0;
-    s.frequency=s.frequency||s.cycle||'monthly';
-    s.nextDate=s.nextDate||s.next||fmtDate(new Date());
-    s.active=s.active!==false;
-    if(!s.name||!s.amount||s.amount<=0) return s;
-    const idx=CFG.subscriptions.findIndex(x=>idEq(x.id,s.id));
-    if(idx>=0) CFG.subscriptions[idx]=Object.assign({},CFG.subscriptions[idx],s);
-    else CFG.subscriptions.unshift(s);
-    this._saveSubs();
-    if(!db) return s;
-    const rowV3={name:s.name,amount:s.amount,frequency:s.frequency,next_date:s.nextDate,active:s.active,color:s.color||null};
-    const rowLegacy={name:s.name,amount:s.amount,billing_cycle:s.frequency,next_billing:s.nextDate,active:s.active,color:s.color||null};
-    try{
-      if(isUUID(s.id) && !isLocalId(s.id,'ls')){
-        let res=await db.from('subscriptions').upsert({id:s.id,...rowV3},{onConflict:'id'});
-        if(res?.error) res=await db.from('subscriptions').upsert({id:s.id,...rowLegacy},{onConflict:'id'});
-        if(res?.error) throw res.error;
-      } else {
-        let res=await db.from('subscriptions').insert([rowV3]).select();
-        if(res?.error) res=await db.from('subscriptions').insert([rowLegacy]).select();
-        if(res?.error) throw res.error;
-        if(res?.data?.[0]?.id){
-          const newId=res.data[0].id;
-          const j=CFG.subscriptions.findIndex(x=>idEq(x.id,s.id));
-          if(j>=0) CFG.subscriptions[j].id=newId;
-          s.id=newId;
-          this._saveSubs();
-        }
-      }
-    }catch(e){ console.warn('subs.save',e); }
-    return s;
-  },
-  async deleteSub(id){
-    const sid=normId(id); if(!sid) return;
-    CFG.subscriptions=(CFG.subscriptions||[]).filter(x=>!idEq(x.id,sid));
-    this._saveSubs();
-    if(!db || !isUUID(sid) || isLocalId(sid,'ls')) return;
-    try{ await db.from('subscriptions').delete().eq('id',sid); }catch(e){ console.warn('subs.delete',e); }
-  },
-
-  /* ── MIGRATE LOCAL → DB ──────────────────────────────── */
-  async migrateAll(){
-    if(!db){ toast('Connetti Supabase prima','warn'); return; }
-    toast('Migrazione in corso...','info');
-    let ok=0,fail=0;
-    const run=async(fn,label)=>{ try{ await fn(); ok++; }catch(e){ fail++; console.warn(label,e); } };
-
-    await run(async()=>{
-      const rows=CFG._accounts.map((a,i)=>({name:a.name,type:a.type,color:a.color,icon:a.icon,initial_balance:a.initialBalance||0,sort_order:i}));
-      if(rows.length) await db.from('accounts').upsert(rows,{onConflict:'name'});
-    },'accounts');
-    await run(async()=>{
-      const rows=Object.entries(CFG.budgets||{}).map(([k,v])=>({category_key:k,amount:v,updated_at:new Date().toISOString()}));
-      if(rows.length) await db.from('budgets').upsert(rows,{onConflict:'category_key'});
-    },'budgets');
-    await run(async()=>{
-      if(!CFG.templates?.length) return;
-      for(const t of CFG.templates){
-        const row={name:t.name,type:t.type,amount:t.amount||null,category_key:t.category_id||null,account_name:t.account||null,description:t.description||null,tags:t.tags||'[]'};
-        if(isUUID(t.id)){
-          const res=await db.from('templates').upsert({id:t.id,...row},{onConflict:'id'});
-          if(res?.error) throw res.error;
-        } else {
-          const res=await db.from('templates').insert([row]).select();
-          if(res?.error) throw res.error;
-          if(res?.data?.[0]?.id) t.id=res.data[0].id;
-        }
-      }
-      this._saveTpl();
-    },'templates');
-    await run(async()=>{
-      if(!CFG.notes?.length) return;
-      for(const n of CFG.notes){
-        const row={text:n.text,done:!!n.done,date:n.date||fmtDate(new Date())};
-        if(isUUID(n.id)){
-          const res=await db.from('notes').upsert({id:n.id,...row},{onConflict:'id'});
-          if(res?.error) throw res.error;
-        } else {
-          const res=await db.from('notes').insert([row]).select();
-          if(res?.error) throw res.error;
-          if(res?.data?.[0]?.id) n.id=res.data[0].id;
-        }
-      }
-      this._saveNotes();
-    },'notes');
-
-    await run(async()=>{
-      for(const g of (CFG.goals||[])) await this.saveGoal(g);
-    },'goals');
-    await run(async()=>{
-      for(const d of (CFG.debts||[])) await this.saveDebt(d);
-    },'debts');
-    await run(async()=>{
-      for(const s of (CFG.subscriptions||[])) await this.saveSub(s);
-    },'subscriptions');
-
-    await run(async()=>{
-      const meta=loadMeta();
-      const entries=Object.entries(meta||{}).filter(([k,v])=>isUUID(k)&&(v?.account_to||v?.tags&&v.tags!=='[]'));
-      for(const [txId,m] of entries) await this.saveTxMeta(txId,{account_to:m.account_to||null,tags:m.tags||'[]'});
-    },'txmeta');
-
-    await run(async()=>{
-      // migrate local (offline) transactions into DB
-      const localTxs=(loadTxs()||[]).filter(t=>!isUUID(t.id));
-      if(!localTxs.length) return;
-      for(const t of localTxs){
-        if(t.type==='transfer'){
-          const ref=genUUID();
-          const desc=t.description||`Giro ${t.account}→${t.account_to}`;
-          const rowOut=toDbPayload(t,'expense',`[GIRO:${ref}] ${desc}`);
-          const rowIn ={...toDbPayload(t,'income', `[GIRO:${ref}] ${desc}`), account:t.account_to};
-          const [r1,r2]=await Promise.all([dbInsertTxRow(rowOut), dbInsertTxRow(rowIn)]);
-          if(r1.error) throw r1.error;
-          if(r2.error) throw r2.error;
-        } else {
-          const row=toDbPayload(t);
-          const res=await dbInsertTxRow(row);
-          if(res.error) throw res.error;
-          const newId=res.data?.[0]?.id;
-          if(newId){
-            const tags=t.tags||'[]';
-            const account_to=t.account_to||null;
-            if(account_to||tags!=='[]') await this.saveTxMeta(newId,{account_to,tags});
-          }
-        }
-      }
-    },'transactions');
-
-    await run(()=>this.updateAllBalances(),'balances');
-    await run(()=>this.pushSettings(),'settings');
-
-    toast(`✅ Migrazione: ${ok} OK · ${fail} errori`,'success');
-    await _syncAllFromDB();
-  },
-};
+/* ── CATEGORY MANAGER ── */
+function openCatManager(){ closeAll(); openModal('catM'); renderCatManager(); }
+function renderCatManager(){
+  const list = document.getElementById('catManagerList');
+  if(!list) return;
+  const custom = Object.entries(CATS).filter(([k,v])=>v._custom);
+  if(!custom.length){
+    list.innerHTML = `<p class="text-xs text-center py-4 opacity-50">Nessuna categoria personalizzata.</p>`;
+    return;
+  }
+  list.innerHTML = custom.map(([k,v])=>`
+    <div class="cat-manager-item flex justify-between items-center p-3 rounded-2xl bg-white/5 border border-white/5">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-xl flex items-center justify-center" style="background:${v.bg}"><i data-lucide="${v.ic}" class="w-4 h-4" style="color:${v.col}"></i></div>
+        <span class="text-sm font-bold">${v.l}</span>
+      </div>
+      <button onclick="deleteCustomCat('${k}')" class="p-2 text-red-500 opacity-60 hover:opacity-100"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+    </div>
+  `).join('');
+  lucide.createIcons();
+}
+async function saveCustomCat(){
+  const label = document.getElementById('nCatLabel').value.trim();
+  const color = document.getElementById('nCatColor').value;
+  const icon = document.getElementById('nCatIcon').value.trim() || 'tag';
+  if(!label){ toast('Inserisci un nome','error'); return; }
+  const key = 'c_'+Date.now();
+  const bg = color + '22';
+  
+  Categories[key] = {l:label, ic:icon, col:color, bg:bg, kw:[], _custom:true};
+  document.getElementById('nCatLabel').value = '';
+  document.getElementById('nCatIcon').value = '';
+  
+  if(!OFFLINE && db){
+    try { await db.from('categories').insert([{key, label, icon, color, background:bg}]); } 
+    catch(e){ console.warn('cat.save',e); }
+  }
+  localStorage.setItem('mpx_cats', JSON.stringify(Object.entries(CATS).filter(([k,v])=>v._custom).map(([k,v])=>({key:k,label:v.l,icon:v.ic,color:v.col,background:v.bg}))));
+  renderCatManager();
+  renderAll();
+  toast('Categoria aggiunta ✓','success');
+}
+async function deleteCustomCat(key){
+  if(!confirm('Eliminare questa categoria?')) return;
+  delete Categories[key];
+  if(!OFFLINE && db){
+    try { await db.from('categories').delete().eq('key', key); } 
+    catch(e){ console.warn('cat.delete',e); }
+  }
+  localStorage.setItem('mpx_cats', JSON.stringify(Object.entries(CATS).filter(([k,v])=>v._custom).map(([k,v])=>({key:k,label:v.l,icon:v.ic,color:v.col,background:v.bg}))));
+  renderCatManager();
+  renderAll();
+}
 
 /* ============================================================
    INIT — asincrono: localStorage subito, poi DB in background
 ============================================================ */
 async function init(){
-  // 1. Carica CFG da localStorage (fast, sincrono)
-  try{ CFG=Object.assign(CFG,loadCfg()); }catch(e){}
-  if(!localStorage.getItem('mpxCfg2') && window.matchMedia('(prefers-color-scheme:dark)').matches) CFG.theme='dark';
-  if(!CFG.templates)     CFG.templates=[];
-  if(!CFG.notes)         CFG.notes=[];
-  if(!CFG.recurringTxs)  CFG.recurringTxs=[];
-  if(!CFG.fx)            CFG.fx={EUR:1,USD:1.08,GBP:0.86,JPY:163,CHF:0.96,CAD:1.47};
-  if(!CFG.budgets)       CFG.budgets={};
-  if(!CFG.ach)           CFG.ach={};
-  if(!CFG.layout)        CFG.layout={};
-  if(!CFG._accounts)     CFG._accounts=[];
-  if(!CFG.subscriptions) CFG.subscriptions=[];
-  if(!CFG.debts)         CFG.debts=[];
-  if(!CFG.goals)         CFG.goals=[];
+  // 1. Carica config da localStorage (fast, sincrono)
+  try{ Object.assign(UserConfig, loadConfig()); }catch(e){}
+  if(!localStorage.getItem('mpxCfg2') && window.matchMedia('(prefers-color-scheme:dark)').matches) UserConfig.theme='dark';
+  if(!UserConfig.templates)     UserConfig.templates=[];
+  if(!UserConfig.notes)         UserConfig.notes=[];
+  if(!UserConfig.recurringTxs)  UserConfig.recurringTxs=[];
+  if(!UserConfig.fx)            UserConfig.fx={EUR:1,USD:1.08,GBP:0.86,JPY:163,CHF:0.96,CAD:1.47};
+  if(!UserConfig.budgets)       UserConfig.budgets={};
+  if(!UserConfig.ach)           UserConfig.ach={};
+  if(!UserConfig.layout)        UserConfig.layout={};
+  if(!UserConfig._accounts)     UserConfig._accounts=[];
+  if(!UserConfig.subscriptions) UserConfig.subscriptions=[];
+  if(!UserConfig.debts)         UserConfig.debts=[];
+  if(!UserConfig.goals)         UserConfig.goals=[];
 
-  // Prefer per-entity caches (newer than CFG snapshot in mpxCfg2)
-  try{ const subs=JSON.parse(localStorage.getItem('mpx_subscriptions')||'null'); if(subs?.length) CFG.subscriptions=subs; }catch(e){}
-  try{ const debts=JSON.parse(localStorage.getItem('mpx_debts')||'null'); if(debts?.length) CFG.debts=debts; }catch(e){}
-  try{ const goals=JSON.parse(localStorage.getItem('mpx_goals')||'null'); if(goals?.length) CFG.goals=goals; }catch(e){}
+  // Prefer per-entity caches (newer than snapshot in mpxCfg2)
+  try{ const subs=JSON.parse(localStorage.getItem('mpx_subscriptions')||'null'); if(subs?.length) UserConfig.subscriptions=subs; }catch(e){}
+  try{ const debts=JSON.parse(localStorage.getItem('mpx_debts')||'null'); if(debts?.length) UserConfig.debts=debts; }catch(e){}
+  try{ const goals=JSON.parse(localStorage.getItem('mpx_goals')||'null'); if(goals?.length) UserConfig.goals=goals; }catch(e){}
   // One-time backfill for users coming from older versions
-  if(localStorage.getItem('mpx_subscriptions')==null && CFG.subscriptions?.length) localStorage.setItem('mpx_subscriptions',JSON.stringify(CFG.subscriptions));
-  if(localStorage.getItem('mpx_debts')==null && CFG.debts?.length) localStorage.setItem('mpx_debts',JSON.stringify(CFG.debts));
-  if(localStorage.getItem('mpx_goals')==null && CFG.goals?.length) localStorage.setItem('mpx_goals',JSON.stringify(CFG.goals));
+  if(localStorage.getItem('mpx_subscriptions')==null && UserConfig.subscriptions?.length) localStorage.setItem('mpx_subscriptions',JSON.stringify(UserConfig.subscriptions));
+  if(localStorage.getItem('mpx_debts')==null && UserConfig.debts?.length) localStorage.setItem('mpx_debts',JSON.stringify(UserConfig.debts));
+  if(localStorage.getItem('mpx_goals')==null && UserConfig.goals?.length) localStorage.setItem('mpx_goals',JSON.stringify(UserConfig.goals));
   // Normalize ids to strings (DB ids are UUID strings)
-  try{ CFG.subscriptions=(CFG.subscriptions||[]).map(s=>({...(s||{}),id:normId(s.id)})); }catch(e){}
-  try{ CFG.debts=(CFG.debts||[]).map(d=>({...(d||{}),id:normId(d.id)})); }catch(e){}
-  try{ CFG.goals=(CFG.goals||[]).map(g=>({...(g||{}),id:normId(g.id)})); }catch(e){}
+  try{ UserConfig.subscriptions=(UserConfig.subscriptions||[]).map(s=>({...(s||{}),id:normId(s.id)})); }catch(e){}
+  try{ UserConfig.debts=(UserConfig.debts||[]).map(d=>({...(d||{}),id:normId(d.id)})); }catch(e){}
+  try{ UserConfig.goals=(UserConfig.goals||[]).map(g=>({...(g||{}),id:normId(g.id)})); }catch(e){}
 
   // 2. Tema e colore immediati
   applyTheme();
-  applyColor(CFG.color||'#0066FF');
+  applyColor(UserConfig.color||'#0066FF');
   try{ renderBalToggleBtn(); }catch(e){}
 
   // 3. UI base
-  try{ document.getElementById('darkT').checked=CFG.theme==='dark'; }catch(e){}
-  try{ document.getElementById('currS').value=CFG.currency||'€'; }catch(e){}
-  try{ document.getElementById('gNameI').value=CFG.goalName||''; }catch(e){}
-  try{ document.getElementById('gValI').value=CFG.goalVal||''; }catch(e){}
+  try{ document.getElementById('darkT').checked=UserConfig.theme==='dark'; }catch(e){}
+  try{ document.getElementById('currS').value=UserConfig.currency||'€'; }catch(e){}
+  try{ document.getElementById('gNameI').value=UserConfig.goalName||''; }catch(e){}
+  try{ document.getElementById('gValI').value=UserConfig.goalVal||''; }catch(e){}
 
   // 4. Carica conti da localStorage/defaults
-  await DBS.loadAccounts();
+  await DatabaseService.loadAccounts();
+  if(!hasAccounts()){
+    openAccountSetup();
+  }
 
   // 5. Popola select categorie
   ['txCat','fCat'].forEach(id=>{
@@ -1429,9 +558,9 @@ async function init(){
   try{ captureDefaultLayouts(); applyLayouts(); installLayoutDnD(); }catch(e){}
 
   // 7. Dati transazioni da localStorage
-  try{ S._localMeta=loadMeta(); }catch(e){ S._localMeta={}; }
-  try{ S.txs=loadTxs(); }catch(e){ S.txs=[]; }
-  S.period = S.period || 'month';
+  try{ AppState._localMeta=loadMetadata(); }catch(e){ AppState._localMeta={}; }
+  try{ AppState.transactions=loadTransactions(); }catch(e){ AppState.transactions=[]; }
+  AppState.period = AppState.period || 'month';
   try{ injectRecurring().catch(()=>{}); }catch(e){}
 
   // 8. Prima render con dati locali
@@ -1454,7 +583,7 @@ async function init(){
 
   // 10. PIN
   try{
-    if(CFG.pinEnabled&&CFG.pin){ const ps=document.getElementById('pinScreen'); if(ps) ps.classList.remove('hidden'); const sk=document.getElementById('pinSkip'); if(sk) sk.style.display='none'; }
+    if(UserConfig.pinEnabled&&UserConfig.pin){ const ps=document.getElementById('pinScreen'); if(ps) ps.classList.remove('hidden'); const sk=document.getElementById('pinSkip'); if(sk) sk.style.display='none'; }
   }catch(e){}
 
   // 11. Carica tutto dal DB in background
@@ -1467,23 +596,23 @@ async function _syncAllFromDB(){
   updateSyncStatus('loading');
   try{
     await Promise.all([
-      DBS.pullSettings(),
-      DBS.loadAccounts(),
-      DBS.loadCustomCategories(),
-      DBS.loadBudgets(),
-      DBS.loadTemplates(),
-      DBS.loadNotes(),
-      DBS.loadDebts(),
-      DBS.loadSubscriptions(),
-      DBS.loadGoals(),
+      DatabaseService.pullSettings(),
+      DatabaseService.loadAccounts(),
+      DatabaseService.loadCustomCategories(),
+      DatabaseService.loadBudgets(),
+      DatabaseService.loadTemplates(),
+      DatabaseService.loadNotes(),
+      DatabaseService.loadDebts(),
+      DatabaseService.loadSubscriptions(),
+      DatabaseService.loadGoals(),
     ]);
     // meta must load before transactions render (tags live here)
-    await DBS.loadTxMeta();
+    await DatabaseService.loadTxMeta();
     await loadData(true);
     // re-apply settings pulled from DB
-    try{ document.getElementById('darkT').checked=CFG.theme==='dark'; applyTheme(); }catch(e){}
-    try{ document.getElementById('currS').value=CFG.currency||'€'; }catch(e){}
-    applyColor(CFG.color||'#0066FF');
+    try{ document.getElementById('darkT').checked=UserConfig.theme==='dark'; applyTheme(); }catch(e){}
+    try{ document.getElementById('currS').value=UserConfig.currency||'€'; }catch(e){}
+    applyColor(UserConfig.color||'#0066FF');
     buildBudgetList();
     buildColorPicker();
     renderWalletSettings();
@@ -1502,7 +631,7 @@ async function _syncAllFromDB(){
 function renderSQLSchema(){
   const el=document.getElementById('sqlSchemaEl'); if(el) el.textContent=SQL_SCHEMA;
 }
-function migrateLocalToDB(){ DBS.migrateAll(); }
+function migrateLocalToDB(){ DatabaseService.migrateAll(); }
 
 /* ── Account color picker ── */
 const _ACC_COLORS=['#0066FF','#00C896','#7C3AED','#FF9500','#FF3B5C','#5AC8FA','#FF6B00','#4CAF50'];
@@ -1515,19 +644,60 @@ function cycleAccColor(){
 /* ============================================================
    MODAL OPEN/CLOSE
 ============================================================ */
-function openModal(id){
-  closeAll(false);
-  document.getElementById('ov').classList.add('on');
-  document.getElementById(id).classList.add('on');
-  lucide.createIcons();
+// `openModal` / `closeAll` are implemented in `public/legacy/ui.js`.
+function hasAccounts(){
+  return Array.isArray(UserConfig._accounts) && UserConfig._accounts.length>0;
 }
-function closeAll(saveState=true){
-  document.querySelectorAll('.sh-up.on').forEach(m=>m.classList.remove('on'));
-  document.getElementById('ov').classList.remove('on');
-  S.editId=null;
+function getDefaultAccountName(){
+  const accounts=UserConfig._accounts||[];
+  if(!accounts.length) return '';
+  const names=accounts.map(a=>a.name);
+  if(UserConfig.defaultWallet && names.includes(UserConfig.defaultWallet)) return UserConfig.defaultWallet;
+  return accounts[0]?.name || '';
+}
+function getSecondAccountName(primaryName){
+  const accounts=UserConfig._accounts||[];
+  const alt=accounts.find(a=>a?.name && a.name!==primaryName);
+  return alt?.name || primaryName || '';
+}
+function openAccountSetup(){
+  AppState._lockedModalId='accSetupM';
+  openModal('accSetupM');
+  setTimeout(()=>{ try{ document.getElementById('accSetupName')?.focus(); }catch(e){} },60);
+}
+function ensureAccountsOrOnboard(){
+  if(hasAccounts()) return true;
+  openAccountSetup();
+  return false;
+}
+async function createFirstAccount(){
+  const name=document.getElementById('accSetupName')?.value?.trim()||'';
+  if(!name){ toast('Inserisci un nome conto','warn'); return; }
+  if(UserConfig._accounts?.some(a=>a.name===name)){ toast('Conto gia esistente','warn'); return; }
+  const type=document.getElementById('accSetupType')?.value||'checking';
+  const initialBalance=parseFloat(document.getElementById('accSetupBal')?.value)||0;
+  const color=typeof DatabaseService?.nextColor==='function' ? DatabaseService.nextColor() : '#0066FF';
+  const icon=typeof DatabaseService?._iconForType==='function' ? DatabaseService._iconForType(type) : ({checking:'credit-card',savings:'piggy-bank',cash:'banknote',credit:'credit-card',invest:'trending-up'}[type]||'wallet');
+  const acc={id:'lac'+Date.now(),name,type,color,icon,initialBalance};
+  try{
+    await DatabaseService.saveAccount(acc);
+    if(!UserConfig.defaultWallet) { UserConfig.defaultWallet=acc.name; saveConfig(); }
+    AppState._lockedModalId=null;
+    closeAll(true);
+    try{ document.getElementById('accSetupName').value=''; }catch(e){}
+    try{ document.getElementById('accSetupBal').value=''; }catch(e){}
+    populateWalletSel();
+    renderWalletSettings();
+    renderAll();
+    toast('Conto creato ✓','success');
+  }catch(e){
+    console.warn('createFirstAccount',e);
+    toast('Errore creazione conto','error');
+  }
 }
 function openAdd(){
-  haptic(); S.editId=null;
+  if(!ensureAccountsOrOnboard()) return;
+  haptic(); AppState.editId=null;
   document.getElementById('mTitle').textContent='Nuovo Movimento';
   document.getElementById('addF').reset();
   document.getElementById('txDate').valueAsDate=new Date();
@@ -1539,7 +709,7 @@ function openAdd(){
 }
 function openCalc(){ haptic(); openModal('calcM'); }
 function calcToTx(){
-  const v=parseFloat(S.calcVal)||parseFloat(S.calcDisp)||0;
+  const v=parseFloat(AppState.calcVal)||parseFloat(AppState.calcDisp)||0;
   if(v>0){
     closeAll(false);
     setTimeout(()=>{
@@ -1564,7 +734,7 @@ function setDark(v){ toggleDark(v); }
    TYPE TOGGLE
 ============================================================ */
 function setFType(t){
-  S.fType = t;
+  AppState.fType = t;
   const ob=document.getElementById('btnOut');
   const ib=document.getElementById('btnIn');
   const tb=document.getElementById('btnTr');
@@ -1602,9 +772,9 @@ function setFType(t){
 ============================================================ */
 function editTx(id){
   haptic();
-  const t = S.txs.find(x=>x.id===id);
+  const t = AppState.transactions.find(x=>x.id===id);
   if(!t) return;
-  S.editId = id;
+  AppState.editId = id;
   document.getElementById('mTitle').textContent='Modifica';
   populateWalletSel();
   setFType(t.type||'expense');
@@ -1613,19 +783,22 @@ function editTx(id){
   try{ const ti=document.getElementById('txTime'); if(ti) ti.value=normTime(t.time)||''; }catch(e){}
   document.getElementById('txDesc').value = t.description||'';
   if(t.type==='transfer'){
-    document.getElementById('txAccFrom').value = t.account||CFG.wallets[0];
-    document.getElementById('txAccTo').value   = t.account_to||(CFG.wallets[1]||CFG.wallets[0]);
+    const from=t.account||getDefaultAccountName();
+    const to=t.account_to||getSecondAccountName(from);
+    document.getElementById('txAccFrom').value = from;
+    document.getElementById('txAccTo').value   = to;
     setTimeout(()=>{
-      renderAccPicker('accFromWrap','txAccFrom', t.account);
-      renderAccPicker('accToWrap','txAccTo', t.account_to);
+      renderAccPicker('accFromWrap','txAccFrom', from);
+      renderAccPicker('accToWrap','txAccTo', to);
     },50);
   } else {
     if(t.category_id){
       document.getElementById('txCat').value = t.category_id;
       setTimeout(()=>{ renderCatPicker('catPickWrap','txCat'); },50);
     }
-    document.getElementById('txAcc').value = t.account||CFG.wallets[0];
-    setTimeout(()=>renderAccPicker('accPickWrap','txAcc', t.account),50);
+    const acc=t.account||getDefaultAccountName();
+    document.getElementById('txAcc').value = acc;
+    setTimeout(()=>renderAccPicker('accPickWrap','txAcc', acc),50);
     const savedTags = t.tags ? (typeof t.tags==='string'?JSON.parse(t.tags):t.tags) : [];
     document.querySelectorAll('.tbtn').forEach(b=>b.classList.toggle('on', savedTags.includes(b.dataset.tag)));
   }
@@ -1636,11 +809,15 @@ function editTx(id){
    POPULATE WALLET SELECT
 ============================================================ */
 function populateWalletSel(){
-  const accounts=CFG._accounts?.length ? CFG._accounts : (CFG.wallets||['Principale']).map(w=>({id:w,name:w,color:'var(--br)',icon:'wallet'}));
-  const wallets=accounts.map(a=>a.name);
+  const accounts=UserConfig._accounts||[];
+  const wallets=accounts.map(a=>a.name).filter(Boolean);
   const opts = wallets.map(w=>`<option value="${w}">${w}</option>`).join('');
-  const defaultWallet = (CFG.defaultWallet && wallets.includes(CFG.defaultWallet)) ? CFG.defaultWallet : (wallets[0] || 'Principale');
-  const defaultTo = wallets.find(w=>w!==defaultWallet) || defaultWallet;
+  const defaultWallet=getDefaultAccountName();
+  const defaultTo=getSecondAccountName(defaultWallet);
+  if(wallets.length && (!UserConfig.defaultWallet || !wallets.includes(UserConfig.defaultWallet))){
+    UserConfig.defaultWallet=defaultWallet;
+    saveConfig();
+  }
   // Update hidden selects
   ['txAcc','txAccFrom','txAccTo'].forEach(id=>{
     const el=document.getElementById(id);
@@ -1655,7 +832,11 @@ function populateWalletSel(){
   const mapAccDef=document.getElementById('mapAccDef');
   if(mapAccDef) mapAccDef.innerHTML=opts;
   const defW=document.getElementById('defWalletS');
-  if(defW){ defW.innerHTML=opts; defW.value=defaultWallet; }
+  if(defW){
+    defW.innerHTML=opts || '<option value=\"\">—</option>';
+    defW.value=defaultWallet;
+    defW.disabled=!wallets.length;
+  }
   // Render visual pill pickers
   renderAccPicker('accPickWrap','txAcc', defaultWallet);
   renderAccPicker('accFromWrap','txAccFrom', defaultWallet);
@@ -1668,7 +849,11 @@ function populateWalletSel(){
 
 function renderAccPicker(wrapperId, selectId, defaultVal){
   const wrap=document.getElementById(wrapperId); if(!wrap) return;
-  const accounts=CFG._accounts?.length ? CFG._accounts : (CFG.wallets||['Principale']).map(w=>({id:w,name:w,color:'var(--br)',icon:'wallet'}));
+  const accounts=UserConfig._accounts||[];
+  if(!accounts.length){
+    wrap.innerHTML=`<button type="button" onclick="openAccountSetup()" class="w-full py-2.5 rounded-xl text-xs font-bold" style="background:var(--bg2);color:var(--br)">+ Crea un conto</button>`;
+    return;
+  }
   const curVal=document.getElementById(selectId)?.value||defaultVal||accounts[0]?.name;
   wrap.innerHTML=accounts.map(acc=>{
     const brand=detectBrand(acc.name);
@@ -1817,10 +1002,10 @@ function _applyOrder(zoneEl, order){
 }
 
 function applyLayouts(){
-  if(!CFG.layout) return;
+  if(!UserConfig.layout) return;
   document.querySelectorAll('[data-zone]').forEach(zoneEl=>{
     const zone=zoneEl.dataset.zone;
-    const order=CFG.layout?.[zone];
+    const order=UserConfig.layout?.[zone];
     if(Array.isArray(order) && order.length) _applyOrder(zoneEl, order);
   });
 }
@@ -1828,13 +1013,13 @@ function applyLayouts(){
 function setLayoutFromDOM(zone){
   const zoneEl=document.querySelector(`[data-zone="${zone}"]`);
   if(!zoneEl) return;
-  if(!CFG.layout) CFG.layout={};
-  CFG.layout[zone]=Array.from(zoneEl.children).map(el=>el?.dataset?.block).filter(Boolean);
+  if(!UserConfig.layout) UserConfig.layout={};
+  UserConfig.layout[zone]=Array.from(zoneEl.children).map(el=>el?.dataset?.block).filter(Boolean);
 }
 
 function _queueLayoutPersist(){
   clearTimeout(_layoutSaveT);
-  _layoutSaveT=setTimeout(()=>{ try{ saveCfg(); }catch(e){} }, 260);
+  _layoutSaveT=setTimeout(()=>{ try{ saveConfig(); }catch(e){} }, 260);
 }
 
 function _ensureLayoutBar(){
@@ -1862,7 +1047,7 @@ function refreshLayoutEditUI(){
     el.draggable=false;
     el.classList.remove('dragging','dragOver');
   });
-  if(!S.layoutMode) return;
+  if(!AppState.layoutMode) return;
   const page=document.querySelector('.page.on');
   if(!page) return;
   page.querySelectorAll('[data-zone] [data-block]').forEach(block=>{
@@ -1894,7 +1079,7 @@ function _layoutBump(el){
 function enterLayoutMode(){
   captureDefaultLayouts();
   applyLayouts();
-  S.layoutMode=true;
+  AppState.layoutMode=true;
   document.body.classList.add('layout-edit');
   _ensureLayoutBar();
   refreshLayoutEditUI();
@@ -1911,7 +1096,7 @@ function exitLayoutMode(){
     });
     _queueLayoutPersist();
   }
-  S.layoutMode=false;
+  AppState.layoutMode=false;
   document.body.classList.remove('layout-edit');
   refreshLayoutEditUI();
   document.getElementById('layoutBar')?.remove();
@@ -1919,7 +1104,7 @@ function exitLayoutMode(){
 }
 
 function toggleLayoutMode(force){
-  const want = (typeof force==='boolean') ? force : !S.layoutMode;
+  const want = (typeof force==='boolean') ? force : !AppState.layoutMode;
   if(want) enterLayoutMode();
   else exitLayoutMode();
 }
@@ -1954,14 +1139,14 @@ function resetLayout(zone){
     const ord=_DEFAULT_LAYOUT?.[z];
     if(Array.isArray(ord) && ord.length){
       _applyOrder(zoneEl, ord);
-      if(!CFG.layout) CFG.layout={};
-      CFG.layout[z]=[...ord];
-    } else if(CFG.layout) {
-      delete CFG.layout[z];
+      if(!UserConfig.layout) UserConfig.layout={};
+      UserConfig.layout[z]=[...ord];
+    } else if(UserConfig.layout) {
+      delete UserConfig.layout[z];
     }
   });
   _queueLayoutPersist();
-  if(S.layoutMode) refreshLayoutEditUI();
+  if(AppState.layoutMode) refreshLayoutEditUI();
 }
 
 function installLayoutDnD(){
@@ -1971,19 +1156,19 @@ function installLayoutDnD(){
   const cleanup=()=>{
     document.querySelectorAll('[data-block].dragging').forEach(x=>x.classList.remove('dragging'));
     document.querySelectorAll('[data-block].dragOver').forEach(x=>x.classList.remove('dragOver'));
-    S._layoutDrag=null;
-    S._layoutOverId=null;
+    AppState._layoutDrag=null;
+    AppState._layoutOverId=null;
   };
 
   document.addEventListener('dragstart',e=>{
-    if(!S.layoutMode) return;
+    if(!AppState.layoutMode) return;
     const blk=e.target?.closest?.('[data-block]');
     if(!blk || !blk.draggable) return;
     const zoneEl=blk.closest?.('[data-zone]');
     const zone=zoneEl?.dataset?.zone;
     const id=blk.dataset.block;
     if(!zone || !id) return;
-    S._layoutDrag={zone,id};
+    AppState._layoutDrag={zone,id};
     blk.classList.add('dragging');
     try{
       e.dataTransfer.effectAllowed='move';
@@ -1992,23 +1177,23 @@ function installLayoutDnD(){
   });
 
   document.addEventListener('dragover',e=>{
-    if(!S.layoutMode || !S._layoutDrag) return;
-    const zoneEl=e.target?.closest?.(`[data-zone="${S._layoutDrag.zone}"]`);
+    if(!AppState.layoutMode || !AppState._layoutDrag) return;
+    const zoneEl=e.target?.closest?.(`[data-zone="${AppState._layoutDrag.zone}"]`);
     if(!zoneEl) return;
     e.preventDefault();
     const over=e.target?.closest?.('[data-block]');
     if(over){
-      if(S._layoutOverId && S._layoutOverId!==over.dataset.block){
-        zoneEl.querySelector(`[data-block="${S._layoutOverId}"]`)?.classList.remove('dragOver');
+      if(AppState._layoutOverId && AppState._layoutOverId!==over.dataset.block){
+        zoneEl.querySelector(`[data-block="${AppState._layoutOverId}"]`)?.classList.remove('dragOver');
       }
-      S._layoutOverId=over.dataset.block;
+      AppState._layoutOverId=over.dataset.block;
       over.classList.add('dragOver');
     }
   });
 
   document.addEventListener('drop',e=>{
-    if(!S.layoutMode || !S._layoutDrag) return;
-    const {zone,id}=S._layoutDrag;
+    if(!AppState.layoutMode || !AppState._layoutDrag) return;
+    const {zone,id}=AppState._layoutDrag;
     const zoneEl=e.target?.closest?.(`[data-zone="${zone}"]`);
     if(!zoneEl) return;
     e.preventDefault();
@@ -2029,10 +1214,14 @@ function installLayoutDnD(){
     cleanup();
   });
 
-  document.addEventListener('dragend',()=>{ if(S.layoutMode) cleanup(); });
+  document.addEventListener('dragend',()=>{ if(AppState.layoutMode) cleanup(); });
 }
 
-function renderAll(){
+function renderAll(section){
+  if(section==='dash') { try{ updateDash(); }catch(e){} return; }
+  if(section==='list') { try{ renderList(); }catch(e){} return; }
+  if(section==='stats') { try{ renderCharts(); }catch(e){} return; }
+  
   try{ updateDash(); }catch(e){ console.warn('updateDash error',e); }
   try{ renderList(); }catch(e){ console.warn('renderList error',e); }
   try{ renderCharts(); }catch(e){ console.warn('renderCharts error',e); }
@@ -2045,22 +1234,29 @@ function renderAll(){
    UPDATE DASHBOARD
 ============================================================ */
 function updateDash(){
-  const year  = S.viewDate.getFullYear();
-  const month = S.viewDate.getMonth();
+  const year  = AppState.viewDate.getFullYear();
+  const month = AppState.viewDate.getMonth();
   const dim   = new Date(year,month+1,0).getDate();
 
   // wallet balances — start from initialBalance for each account
-  const accounts=CFG._accounts?.length?CFG._accounts:(CFG.wallets||[]).map(w=>({name:w,initialBalance:0}));
+  const accounts=UserConfig._accounts||[];
   const wB={};
-  accounts.forEach(a=>{ wB[a.name]=a.initialBalance||0; });
+  accounts.forEach(a=>{ if(a?.name) wB[a.name]=+a.initialBalance||0; });
 
-  S.txs.forEach(t=>{
-    const a=+t.amount, w=t.account||(accounts[0]?.name||'Principale');
+  AppState.transactions.forEach(t=>{
+    const a=+t.amount||0;
+    const w=String(t.account||'').trim();
+    if(!w) return;
+    if(wB[w]===undefined) wB[w]=0;
     if(t.type==='transfer'){
-      if(wB[w]!==undefined) wB[w]-=a;
-      if(t.account_to&&wB[t.account_to]!==undefined) wB[t.account_to]+=a;
+      wB[w]-=a;
+      const to=String(t.account_to||'').trim();
+      if(to){
+        if(wB[to]===undefined) wB[to]=0;
+        wB[to]+=a;
+      }
     } else {
-      if(wB[w]!==undefined) wB[w]+= t.type==='expense'?-a:a;
+      wB[w]+= t.type==='expense'?-a:a;
     }
   });
 
@@ -2068,57 +1264,57 @@ function updateDash(){
   const totalNet=Object.values(wB).reduce((s,v)=>s+v,0);
 
   // month transactions
-  const mTxs = S.txs.filter(t=>{
+  const mTxs = AppState.transactions.filter(t=>{
     const d=new Date(t.date+'T12:00');
     return d.getMonth()===month && d.getFullYear()===year && t.type!=='transfer';
   });
-  const tIn  = mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
-  const tOut = mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
-  const sr   = srFor(S.txs, S.viewDate);
+  const totalIncome  = mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
+  const totalExpense = mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
+  const savingsRate   = savingsRateFor(AppState.transactions, AppState.viewDate);
 
   // hero balance
   const balEl = document.getElementById('uiBal');
   if(balEl){
-    const show = CFG.showBalance;
+    const show = UserConfig.showBalance;
     balEl.textContent = show ? fmtFull(totalNet) : '••••••';
     balEl.style.filter = show ? 'none' : 'blur(8px)';
   }
-  setEl('uiIn',  fmtShort(tIn));
-  setEl('uiOut', fmtShort(tOut));
-  setEl('uiSav', sr>0 ? sr.toFixed(0)+'%' : '0%');
+  setEl('uiIn',  fmtShort(totalIncome));
+  setEl('uiOut', fmtShort(totalExpense));
+  setEl('uiSav', savingsRate>0 ? savingsRate.toFixed(0)+'%' : '0%');
 
   // month label
-  setEl('monthLbl', S.viewDate.toLocaleDateString('it-IT',{month:'long',year:'numeric'}));
+  setEl('monthLbl', AppState.viewDate.toLocaleDateString('it-IT',{month:'long',year:'numeric'}));
 
   // health score
-  renderHealthScore(sr, tIn, tOut);
+  renderHealthScore(savingsRate, totalIncome, totalExpense);
   renderWallets(wB, totalNet);
   updateGoal(totalNet);
   renderBudgetMini(mTxs);
-  renderForecast(mTxs, tOut, tIn, dim);
-  renderInsights(mTxs, tIn, tOut, sr);
-  renderQuickStats(mTxs, tOut);
+  renderForecast(mTxs, totalExpense, totalIncome, dim);
+  renderInsights(mTxs, totalIncome, totalExpense, savingsRate);
+  renderQuickStats(mTxs, totalExpense);
   renderSparkline(year, month);
   renderRecentTxs();
   try{ renderDebtsMini(); }catch(e){}
   try{ renderSubsMini(); }catch(e){}
 
   // savings rate gauge (stats tab)
-  setEl('srPct', sr>0?sr+'%':'0%');
-  setEl('srPctRing', sr>0?sr+'%':'0%');
-  setEl('srLbl', sr>30?'Ottimo risparmio 💪':sr>10?'Risparmio nella media':sr>0?'Risparmio basso':'Nessun risparmio');
-  const srRing=document.getElementById('srRing');
-  if(srRing){
-    const dash=parseFloat(srRing.getAttribute('stroke-dasharray')||'226')||226;
-    setTimeout(()=>{const p=Math.max(0,Math.min(100,sr));srRing.style.strokeDashoffset=dash-(p/100)*dash;},200);
+  setEl('savingsRatePct', savingsRate>0?savingsRate+'%':'0%');
+  setEl('savingsRatePctRing', savingsRate>0?savingsRate+'%':'0%');
+  setEl('savingsRateLbl', savingsRate>30?'Ottimo risparmio 💪':savingsRate>10?'Risparmio nella media':savingsRate>0?'Risparmio basso':'Nessun risparmio');
+  const savingsRateRing=document.getElementById('savingsRateRing');
+  if(savingsRateRing){
+    const dash=parseFloat(savingsRateRing.getAttribute('stroke-dasharray')||'226')||226;
+    setTimeout(()=>{const p=Math.max(0,Math.min(100,savingsRate));savingsRateRing.style.strokeDashoffset=dash-(p/100)*dash;},200);
   }
 
   // trend badge vs prev month
   const prevDate=new Date(year,month-1,1);
-  const prevOut=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===prevDate.getMonth()&&d.getFullYear()===prevDate.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
+  const prevOut=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===prevDate.getMonth()&&d.getFullYear()===prevDate.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
   const trendPEl=document.getElementById('trendP');
   if(trendPEl&&prevOut>0){
-    const diff=Math.round((tOut-prevOut)/prevOut*100);
+    const diff=Math.round((totalExpense-prevOut)/prevOut*100);
     trendPEl.textContent=(diff>0?'+':'')+diff+'%';
     trendPEl.style.background=diff>0?'rgba(255,59,92,.18)':'rgba(0,200,150,.18)';
     trendPEl.style.color=diff>0?'var(--bd)':'var(--ok)';
@@ -2129,20 +1325,20 @@ function updateDash(){
    HELPERS
 ============================================================ */
 function setEl(id,v){ const el=document.getElementById(id); if(el) el.textContent=v; }
-function fmt(n){ return (CFG.currency||'€')+' '+parseFloat(n).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
-function fmtFull(n){ return (CFG.currency||'€')+' '+parseFloat(n).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmt(n){ return (UserConfig.currency||'€')+' '+parseFloat(n).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtFull(n){ return (UserConfig.currency||'€')+' '+parseFloat(n).toLocaleString('it-IT',{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function fmtShort(n){
   const abs=Math.abs(parseFloat(n));
-  if(abs>=1000000) return (CFG.currency||'€')+' '+(abs/1000000).toFixed(1)+'M';
-  if(abs>=1000) return (CFG.currency||'€')+' '+(abs/1000).toFixed(1)+'k';
-  return (CFG.currency||'€')+' '+abs.toLocaleString('it-IT',{minimumFractionDigits:0,maximumFractionDigits:0});
+  if(abs>=1000000) return (UserConfig.currency||'€')+' '+(abs/1000000).toFixed(1)+'M';
+  if(abs>=1000) return (UserConfig.currency||'€')+' '+(abs/1000).toFixed(1)+'k';
+  return (UserConfig.currency||'€')+' '+abs.toLocaleString('it-IT',{minimumFractionDigits:0,maximumFractionDigits:0});
 }
 function td(){ return fmtDate(new Date()).replace(/-/g,''); }
 function download(blob, name){
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
 }
 function haptic(){ if(navigator.vibrate) navigator.vibrate(8); }
-function srFor(txs, d){
+function savingsRateFor(txs, d){
   const m=d.getMonth(), y=d.getFullYear();
   const mx=txs.filter(t=>{const dd=new Date(t.date+'T12:00');return dd.getMonth()===m&&dd.getFullYear()===y&&t.type!=='transfer';});
   const inc=mx.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
@@ -2183,16 +1379,16 @@ function setGreeting(){
 /* ============================================================
    HEALTH SCORE
 ============================================================ */
-function renderHealthScore(sr, tIn, tOut){
+function renderHealthScore(savingsRate, totalIncome, totalExpense){
   let score=50;
-  if(sr>30) score+=20; else if(sr>0) score+=10; else if(sr<0) score-=20;
-  if(tIn>tOut*1.3) score+=15;
-  const bOver = Object.entries(CFG.budgets||{}).filter(([cat,lim])=>{
-    const sp=S.txs.filter(t=>t.category_id===cat&&t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
+  if(savingsRate>30) score+=20; else if(savingsRate>0) score+=10; else if(savingsRate<0) score-=20;
+  if(totalIncome>totalExpense*1.3) score+=15;
+  const bOver = Object.entries(UserConfig.budgets||{}).filter(([cat,lim])=>{
+    const sp=AppState.transactions.filter(t=>t.category_id===cat&&t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
     return +sp > +lim;
   }).length;
   score -= bOver*10;
-  if(CFG.goalVal) score+=5;
+  if(UserConfig.goalVal) score+=5;
   score=Math.max(0,Math.min(100,score));
   const grade=score>=90?'A+':score>=80?'A':score>=70?'B':score>=60?'C':score>=50?'D':'F';
   const col=score>=70?'var(--ok)':score>=50?'var(--wn)':'var(--bd)';
@@ -2207,10 +1403,10 @@ function renderHealthScore(sr, tIn, tOut){
 /* ============================================================
    QUICK STATS
 ============================================================ */
-function renderQuickStats(mTxs, tOut){
+function renderQuickStats(mTxs, totalExpense){
   const expenses = mTxs.filter(t=>t.type==='expense');
   const today=new Date().getDate();
-  setEl('sAvg', today>0 ? fmtShort(tOut/today) : '—');
+  setEl('sAvg', today>0 ? fmtShort(totalExpense/today) : '—');
   const maxT = expenses.reduce((best,t)=>+t.amount>best?+t.amount:best,0);
   setEl('sMax', maxT>0 ? fmtShort(maxT) : '—');
   setEl('sNum', mTxs.length);
@@ -2228,22 +1424,22 @@ function renderSparkline(year, month){
   // Start with total balance before this month
   const startMonthStr = fmtDate(new Date(year, month, 1));
   let running = 0;
-  if(CFG._accounts) CFG._accounts.forEach(a => running += +a.initialBalance || 0);
-  S.txs.filter(t => t.date < startMonthStr && t.type !== 'transfer').forEach(t => {
+  if(UserConfig._accounts) UserConfig._accounts.forEach(a => running += +a.initialBalance || 0);
+  AppState.transactions.filter(t => t.date < startMonthStr && t.type !== 'transfer').forEach(t => {
     running += t.type === 'income' ? +t.amount : -+t.amount;
   });
 
   const vals=days.map(d=>{
     const day=`${year}-${String(month+1).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
-    S.txs.filter(t=>t.date===day&&t.type!=='transfer').forEach(t=>running+=t.type==='income'?+t.amount:-+t.amount);
+    AppState.transactions.filter(t=>t.date===day&&t.type!=='transfer').forEach(t=>running+=t.type==='income'?+t.amount:-+t.amount);
     return running;
   });
-  if(S.charts.spark) S.charts.spark.destroy();
+  if(AppState.charts.spark) AppState.charts.spark.destroy();
   const ctx=canvas.getContext('2d');
   const pos=vals[vals.length-1]>=0;
   const col=pos?'rgba(0,200,150,.8)':'rgba(255,59,92,.8)';
   
-  S.charts.spark=new Chart(ctx,{
+  AppState.charts.spark=new Chart(ctx,{
     type:'line',
     data:{labels:days,datasets:[{data:vals,borderColor:col,borderWidth:2,pointRadius:0,fill:true,backgroundColor:col.replace('.8','.12'),tension:.4}]},
     options:{
@@ -2262,7 +1458,7 @@ function renderSparkline(year, month){
 function renderRecentTxs(){
   const el=document.getElementById('recentList');
   if(!el) return;
-  const recent=[...S.txs].sort(cmpTxDTDesc).slice(0,5);
+  const recent=[...AppState.transactions].sort(cmpTxDTDesc).slice(0,5);
   el.innerHTML=recent.length ? txItems(recent,false) : emptyEl('Nessun movimento ancora');
   lucide.createIcons();
 }
@@ -2276,18 +1472,19 @@ function txItems(txs, actions=false){
     const isTransfer=(t.type==='transfer');
     const c = isTransfer
       ? {l:'Trasferimento',ic:'arrow-right-left',col:'#FF9500',bg:'rgba(255,149,0,.12)'}
-      : (CATS[t.category_id]||CATS.other);
+      : (Categories[t.category_id]||Categories.other);
     const amtCol = t.type==='expense'?'var(--bd)':t.type==='income'?'var(--ok)':'var(--wn)';
     const sign   = t.type==='expense'?'−':t.type==='income'?'+':'⇄';
     const dStr   = new Date(t.date+'T12:00').toLocaleDateString('it-IT',{day:'2-digit',month:'short'});
     const timeStr=normTime(t.time);
-    const acc    = t.account||CFG.wallets[0];
-    const accObj = CFG._accounts?.find(a=>a.name===acc);
+    const acc    = String(t.account||'').trim() || getDefaultAccountName();
+    const accObj = UserConfig._accounts?.find(a=>a.name===acc);
     const brand  = detectBrand(acc);
     const accBadge = brand ? `<span class="ft-badge" style="width:14px;height:14px;border-radius:4px;background:${FINTECH_BRANDS[brand].bg};font-size:6px;display:inline-flex;align-items:center;justify-content:center;color:#fff;font-weight:800;margin-right:2px;vertical-align:middle;flex-shrink:0">${FINTECH_BRANDS[brand].text}</span>` : '';
     const title  = t.description || c.l;
     const subCat = t.description ? c.l : '';
-    const subAcc = isTransfer ? `${acc} → ${t.account_to||'?'}` : acc;
+    const accLbl = acc || 'Senza conto';
+    const subAcc = isTransfer ? `${accLbl} → ${t.account_to||'?'}` : accLbl;
     const subtitle = [dStr, timeStr, subCat, subAcc].filter(Boolean).join(' · ');
     let tags='';
     if(!isTransfer && t.tags){
@@ -2341,10 +1538,11 @@ function renderList(){
   const fMax  = parseFloat(document.getElementById('fMax')?.value)||Infinity;
   const fCat  = document.getElementById('fCat')?.value||'';
 
-  let filtered = S.txs.filter(t=>{
-    const mt = (t.description||'').toLowerCase().includes(q)||(CATS[t.category_id]?.l||'').toLowerCase().includes(q);
-    const mw = S.wFilter==='all'||(t.account||CFG.wallets[0])===S.wFilter||(t.type==='transfer'&&t.account_to===S.wFilter);
-    const mty= S.txFilter==='all'||t.type===S.txFilter;
+  let filtered = AppState.transactions.filter(t=>{
+    const mt = (t.description||'').toLowerCase().includes(q)||(Categories[t.category_id]?.l||'').toLowerCase().includes(q);
+    const txAcc = String(t.account||'').trim() || getDefaultAccountName();
+    const mw = AppState.wFilter==='all'||txAcc===AppState.wFilter||(t.type==='transfer'&&t.account_to===AppState.wFilter);
+    const mty= AppState.txFilter==='all'||t.type===AppState.txFilter;
     const mFr= !fFrom||t.date>=fFrom;
     const mTo= !fTo||t.date<=fTo;
     const mA = +t.amount>=fMin&&+t.amount<=fMax;
@@ -2371,14 +1569,21 @@ function renderList(){
 function renderWallets(wB, totalNet){
   const el=document.getElementById('wDash');
   if(!el) return;
-  const accounts=CFG._accounts?.length ? CFG._accounts : (CFG.wallets||[]).map(w=>({name:w,color:'var(--br)',icon:'wallet',initialBalance:0}));
+  const accounts=UserConfig._accounts||[];
+  if(!accounts.length){
+    el.innerHTML=`<div class="card p-4 w-full" style="min-width:260px">
+      <p class="text-xs font-bold" style="color:var(--t2)">Nessun conto configurato.</p>
+      <button onclick="openAccountSetup()" class="mt-2 px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest" style="background:rgba(0,102,255,.1);color:var(--br)">Crea conto</button>
+    </div>`;
+    return;
+  }
   el.innerHTML=`
-    <div onclick="filterWallet('all')" class="wc flex-shrink-0 w-36 card p-4 border cursor-pointer" style="border-color:${S.wFilter==='all'?'var(--br)':'var(--bo)'}">
+    <div onclick="filterWallet('all')" class="wc flex-shrink-0 w-36 card p-4 border cursor-pointer" style="border-color:${AppState.wFilter==='all'?'var(--br)':'var(--bo)'}">
       <p class="text-[9px] font-bold uppercase tracking-wider mb-2" style="color:var(--t2)"><i data-lucide="layout-grid" class="w-3 h-3 inline mr-1"></i>Tutti</p>
       <p class="text-xl font-black" style="font-variant-numeric:tabular-nums;color:${totalNet<0?'var(--bd)':'var(--t)'}">${fmtShort(totalNet)}</p>
     </div>`+accounts.map(acc=>{
       const bal=wB[acc.name]??0;
-      return `<div onclick="filterWallet('${acc.name}')" class="wc flex-shrink-0 w-36 card p-4 border cursor-pointer" style="border-color:${S.wFilter===acc.name?acc.color:'var(--bo)'}">
+      return `<div onclick="filterWallet('${acc.name}')" class="wc flex-shrink-0 w-36 card p-4 border cursor-pointer" style="border-color:${AppState.wFilter===acc.name?acc.color:'var(--bo)'}">
         <p class="text-[9px] font-bold uppercase tracking-wider mb-2 truncate" style="color:${acc.color}">
           <i data-lucide="${acc.icon||'wallet'}" class="w-3 h-3 inline mr-1"></i>${acc.name}
         </p>
@@ -2387,7 +1592,7 @@ function renderWallets(wB, totalNet){
     }).join('')+'';
   // brand icons for wallets
   el.innerHTML = el.innerHTML; // refresh handled below
-  const accounts2=CFG._accounts?.length ? CFG._accounts : (CFG.wallets||[]).map(w=>({name:w,color:'var(--br)',icon:'wallet',initialBalance:0}));
+  const accounts2=accounts;
   // Re-render with brand icons
   const existing = el.children;
   Array.from(existing).slice(1).forEach((card,i)=>{
@@ -2408,7 +1613,7 @@ function renderWallets(wB, totalNet){
   });
   lucide.createIcons();
 }
-function filterWallet(w){ haptic(); S.wFilter=w; updateDash(); renderList(); }
+function filterWallet(w){ haptic(); AppState.wFilter=w; updateDash(); renderList(); }
 
 /* ============================================================
    GOAL
@@ -2416,12 +1621,12 @@ function filterWallet(w){ haptic(); S.wFilter=w; updateDash(); renderList(); }
 function updateGoal(net){
   const gb=document.getElementById('goalBox');
   if(!gb) return;
-  if(CFG.goalVal&&parseFloat(CFG.goalVal)>0){
+  if(UserConfig.goalVal&&parseFloat(UserConfig.goalVal)>0){
     gb.classList.remove('hidden');
-    setEl('gName', CFG.goalName||'Obiettivo');
-    const p=Math.max(0,Math.min(100,(net/parseFloat(CFG.goalVal))*100));
+    setEl('gName', UserConfig.goalName||'Obiettivo');
+    const p=Math.max(0,Math.min(100,(net/parseFloat(UserConfig.goalVal))*100));
     setEl('gPct', Math.round(p)+'%');
-    setEl('gAmt', `${fmt(Math.max(0,net))} / ${fmt(CFG.goalVal)}`);
+    setEl('gAmt', `${fmt(Math.max(0,net))} / ${fmt(UserConfig.goalVal)}`);
     setTimeout(()=>{ const b=document.getElementById('gBar'); if(b) b.style.width=p+'%'; },120);
     if(p>=100) launchConfetti();
   } else gb.classList.add('hidden');
@@ -2430,15 +1635,15 @@ function updateGoal(net){
 /* ============================================================
    BUDGET MINI
 ============================================================ */
-function renderBudgetMini(mTxs){
-  const bl=document.getElementById('budMini');
+function renderBudgetMini(mTxs, targetId='budMini'){
+  const bl=document.getElementById(targetId);
   if(!bl) return;
-  if(!Object.keys(CFG.budgets||{}).length){
+  if(!Object.keys(UserConfig.budgets||{}).length){
     bl.innerHTML=`<p class="text-sm text-center py-1" style="color:var(--t2)">Nessun budget. <button onclick="openBudM()" class="font-bold underline" style="color:var(--br)">Imposta ora</button></p>`;
     return;
   }
-  bl.innerHTML=Object.entries(CFG.budgets).map(([cat,lim])=>{
-    const c=CATS[cat]; if(!c) return '';
+  bl.innerHTML=Object.entries(UserConfig.budgets).map(([cat,lim])=>{
+    const c=Categories[cat]; if(!c) return '';
     const sp=mTxs.filter(t=>t.category_id===cat&&t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
     const p=Math.min(100,Math.round(sp/+lim*100));
     const col=p>=100?'var(--bd)':p>=80?'var(--wn)':'var(--ok)';
@@ -2454,40 +1659,50 @@ function renderBudgetMini(mTxs){
 /* ============================================================
    FORECAST
 ============================================================ */
-function renderForecast(mTxs, tOut, tIn, dim){
+function renderForecast(mTxs, totalExpense, totalIncome, dim){
   const fb=document.getElementById('forecastBox');
   if(!fb) return;
   const today=new Date();
-  if(today.getMonth()!==S.viewDate.getMonth()||today.getFullYear()!==S.viewDate.getFullYear()||today.getDate()<3){fb.classList.add('hidden');return;}
+  if(today.getMonth()!==AppState.viewDate.getMonth()||today.getFullYear()!==AppState.viewDate.getFullYear()||today.getDate()<3){fb.classList.add('hidden');return;}
   fb.classList.remove('hidden');
-  const daily=tOut/today.getDate();
-  const proj=tOut+daily*(dim-today.getDate());
-  const pct=tIn>0?Math.min(100,Math.round(proj/tIn*100)):0;
+  const daily=totalExpense/today.getDate();
+  const proj=totalExpense+daily*(dim-today.getDate());
+  const pct=totalIncome>0?Math.min(100,Math.round(proj/totalIncome*100)):0;
   setEl('foreAmt', fmt(proj));
   setEl('forePct', pct+'%');
-  setEl('foreNote', proj>tIn?`⚠️ ${fmt(proj-tIn)} sopra le entrate`:`✅ ${fmt(tIn-proj)} sotto le entrate`);
+  setEl('foreNote', proj>totalIncome?`⚠️ ${fmt(proj-totalIncome)} sopra le entrate`:`✅ ${fmt(totalIncome-proj)} sotto le entrate`);
   setTimeout(()=>{ const r=document.getElementById('foreRing'); if(r) r.style.strokeDashoffset=176-(pct/100)*176; },120);
 }
 
 /* ============================================================
    INSIGHTS
 ============================================================ */
-function renderInsights(mTxs, tIn, tOut, sr){
+function renderInsights(mTxs, totalIncome, totalExpense, savingsRate){
   const list=[];
   const exp=mTxs.filter(t=>t.type==='expense');
   if(exp.length){
     const cats={};
     exp.forEach(t=>{ cats[t.category_id]=(cats[t.category_id]||0)+ +t.amount; });
     const topCat=Object.entries(cats).sort((a,b)=>b[1]-a[1])[0];
-    if(topCat) list.push({e:'📊',t:`Top categoria: <b>${CATS[topCat[0]]?.l||topCat[0]}</b> — ${fmt(topCat[1])}`});
+    if(topCat) list.push({e:'📊',t:`Top categoria: <b>${Categories[topCat[0]]?.l||topCat[0]}</b> — ${fmt(topCat[1])}`});
   }
-  if(sr>30) list.push({e:'💰',t:`Ottimo! Stai risparmiando il <b>${sr}%</b> delle entrate`});
-  else if(sr<0) list.push({e:'⚠️',t:`Attenzione: spendi più di quello che guadagni (<b>${sr}%</b>)`});
-  const avgDay=tOut/(new Date().getDate()||1);
-  list.push({e:'📅',t:`Spendi in media <b>${fmt(avgDay)}</b> al giorno questo mese`});
-  if(tIn>0&&tOut>tIn*.9) list.push({e:'🚨',t:`Stai usando oltre il 90% delle entrate questo mese`});
-  const daysLeft=new Date(S.viewDate.getFullYear(),S.viewDate.getMonth()+1,0).getDate()-new Date().getDate();
-  if(daysLeft>0) list.push({e:'📆',t:`Mancano <b>${daysLeft} giorni</b> alla fine del mese`});
+  
+  if(totalExpense > totalIncome && totalIncome > 0) list.push({e:'⚠️', t:`Attenzione: le uscite superano le entrate di <b>${fmt(totalExpense-totalIncome)}</b>.`});
+  if(savingsRate > 40) list.push({e:'🚀', t:`Risparmio incredibile! Hai messo da parte il <b>${savingsRate}%</b>.`});
+  else if(savingsRate > 20) list.push({e:'✅', t:`Buon tasso di risparmio (<b>${savingsRate}%</b>). Continua così!`});
+  
+  const avgDay = totalExpense / (new Date().getDate()||1);
+  list.push({e:'📅',t:`Media giornaliera: <b>${fmt(avgDay)}</b>.`});
+  
+  const tips = [
+    "Usa i template per velocizzare l'inserimento!",
+    "Controlla i tuoi abbonamenti per risparmiare.",
+    "Imposta un budget per le categorie più costose.",
+    "Il Cloud Sync tiene i tuoi dati al sicuro.",
+    "Prova la visualizzazione a 3 mesi per trend più chiari."
+  ];
+  list.push({e:'💡', t: tips[Math.floor(Math.random()*tips.length)]});
+
   const el=document.getElementById('insList');
   if(el) el.innerHTML=list.slice(0,3).map(i=>`<div class="flex items-start gap-2.5 py-2.5 border-b last:border-0" style="border-color:var(--bo)"><span class="text-lg">${i.e}</span><p class="text-sm leading-snug">${i.t}</p></div>`).join('');
   const elFull=document.getElementById('insDeep');
@@ -2498,8 +1713,8 @@ function renderInsights(mTxs, tIn, tOut, sr){
    CHARTS
 ============================================================ */
 function renderCharts(){
-  const p=S.period||'month';
-  const base=new Date(S.viewDate.getFullYear(),S.viewDate.getMonth(),1);
+  const p=AppState.period||'month';
+  const base=new Date(AppState.viewDate.getFullYear(),AppState.viewDate.getMonth(),1);
   const baseYear=base.getFullYear();
   const baseMonth=base.getMonth();
 
@@ -2509,7 +1724,7 @@ function renderCharts(){
   const startStr  = fmtDate(winStart);
   const endStr    = fmtDate(winEnd);
 
-  const winTxs=S.txs.filter(t=>t.type!=='transfer' && t.date>=startStr && t.date<=endStr);
+  const winTxs=AppState.transactions.filter(t=>t.type!=='transfer' && t.date>=startStr && t.date<=endStr);
   const winInc=winTxs.filter(t=>t.type==='income');
   const winExp=winTxs.filter(t=>t.type==='expense');
 
@@ -2519,7 +1734,7 @@ function renderCharts(){
   // ── HERO & KPI ──
   const incTotal = winInc.reduce((s,t)=>s+ +t.amount,0);
   const expTotal = winExp.reduce((s,t)=>s+ +t.amount,0);
-  const sr       = incTotal>0 ? Math.round((1-expTotal/incTotal)*100) : 0;
+  const savingsRate       = incTotal>0 ? Math.round((1-expTotal/incTotal)*100) : 0;
 
   const netTotal=incTotal-expTotal;
   setEl('heroNet', fmt(netTotal));
@@ -2529,9 +1744,9 @@ function renderCharts(){
   const srRingHero=document.getElementById('srRingHero');
   if(srRingHero){
     const dash=144;
-    const pp=Math.max(0,Math.min(100,sr));
+    const pp=Math.max(0,Math.min(100,savingsRate));
     srRingHero.style.strokeDashoffset=dash-(pp/100)*dash;
-    setEl('srPctHero', sr+'%');
+    setEl('srPctHero', savingsRate+'%');
   }
 
   const daysWin=Math.max(1, Math.round((new Date(endStr+'T12:00')-new Date(startStr+'T12:00'))/(1000*60*60*24))+1);
@@ -2543,7 +1758,7 @@ function renderCharts(){
   const prevStart=new Date(baseYear, baseMonth-(2*winMonths-1), 1);
   const prevStartStr=fmtDate(prevStart);
   const prevEndStr=fmtDate(prevEnd);
-  const prevExpTotal=S.txs.filter(t=>t.type==='expense' && t.date>=prevStartStr && t.date<=prevEndStr).reduce((s,t)=>s+ +t.amount,0);
+  const prevExpTotal=AppState.transactions.filter(t=>t.type==='expense' && t.date>=prevStartStr && t.date<=prevEndStr).reduce((s,t)=>s+ +t.amount,0);
   const prevDaysWin=Math.max(1, Math.round((new Date(prevEndStr+'T12:00')-new Date(prevStartStr+'T12:00'))/(1000*60*60*24))+1);
   const prevAvg=prevExpTotal/prevDaysWin;
   const diffPct=prevAvg>0 ? Math.round((avgDay-prevAvg)/prevAvg*100) : 0;
@@ -2563,14 +1778,14 @@ function renderCharts(){
   if(expTotal > prevExpTotal && prevExpTotal > 0) insights.push(`Stai spendendo il ${Math.abs(diffPct)}% in più rispetto al periodo precedente.`);
   else if(expTotal < prevExpTotal) insights.push(`Ottimo! Spese ridotte del ${Math.abs(diffPct)}% rispetto al periodo scorso.`);
   
-  const topCatObj = topCat ? CATS[topCat[0]] : null;
+  const topCatObj = topCat ? Categories[topCat[0]] : null;
   if(topCatObj) insights.push(`La tua spesa maggiore è stata in ${topCatObj.l} (${fmt(topCat[1])}).`);
-  if(sr > 30) insights.push(`Risparmio eccellente del ${sr}%! Continua così.`);
+  if(savingsRate > 30) insights.push(`Risparmio eccellente del ${savingsRate}%! Continua così.`);
   
   setEl('ins1', insights[0] || 'Nessun trend rilevante rilevato al momento.');
   setEl('ins2', insights[1] || 'Monitora le tue categorie per ottimizzare il budget.');
 
-  setEl('statTopCat', topCat ? (CATS[topCat[0]]?.l||topCat[0]) : '—');
+  setEl('statTopCat', topCat ? (Categories[topCat[0]]?.l||topCat[0]) : '—');
   setEl('statTopAmt', topCat ? fmt(topCat[1]) : '—');
   setEl('statTxCount', winTxs.length);
 
@@ -2582,15 +1797,15 @@ function renderCharts(){
   const startMonthStr = fmtDate(new Date(baseYear, baseMonth, 1));
   let running = 0;
   // Initial account balances
-  if(CFG._accounts) CFG._accounts.forEach(a => running += +a.initialBalance || 0);
+  if(UserConfig._accounts) UserConfig._accounts.forEach(a => running += +a.initialBalance || 0);
   // Transactions before this month
-  S.txs.filter(t => t.date < startMonthStr && t.type !== 'transfer').forEach(t => {
+  AppState.transactions.filter(t => t.date < startMonthStr && t.type !== 'transfer').forEach(t => {
     running += t.type === 'income' ? +t.amount : -+t.amount;
   });
 
   const balVals = days.map(d => {
     const day = `${baseYear}-${String(baseMonth + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
-    S.txs.filter(t => t.date === day && t.type !== 'transfer').forEach(t => {
+    AppState.transactions.filter(t => t.date === day && t.type !== 'transfer').forEach(t => {
       running += t.type === 'income' ? +t.amount : -+t.amount;
     });
     return running;
@@ -2642,7 +1857,7 @@ function renderCharts(){
     mLabels.push(d.toLocaleDateString('it-IT', { month: 'short' }));
     const start = fmtDate(new Date(d.getFullYear(), d.getMonth(), 1));
     const end = fmtDate(new Date(d.getFullYear(), d.getMonth() + 1, 0));
-    const mtxs = S.txs.filter(t => t.type !== 'transfer' && t.date >= start && t.date <= end);
+    const mtxs = AppState.transactions.filter(t => t.type !== 'transfer' && t.date >= start && t.date <= end);
     mInc.push(mtxs.filter(t => t.type === 'income').reduce((s, t) => s + +t.amount, 0));
     mExp.push(mtxs.filter(t => t.type === 'expense').reduce((s, t) => s + +t.amount, 0));
   }
@@ -2666,10 +1881,10 @@ function renderCharts(){
   const donutTotalEl = document.getElementById('donutTotal');
   if (donutTotalEl) donutTotalEl.textContent = fmtShort(expTotal);
   
-  const donutColors = catEntries.map(([k]) => CATS[k]?.col || '#888');
+  const donutColors = catEntries.map(([k]) => Categories[k]?.col || '#888');
 
   makeChart('cDonut', 'doughnut', {
-    labels: catEntries.map(([k]) => CATS[k]?.l || k),
+    labels: catEntries.map(([k]) => Categories[k]?.l || k),
     datasets: [{
       data: catEntries.map(([, v]) => v),
       backgroundColor: donutColors,
@@ -2698,10 +1913,18 @@ function renderCharts(){
 
   renderHeatmap(baseYear, baseMonth);
   renderCategoryBars(winExp);
+  // Budget is monthly (base month), independent from the selected window.
+  try{
+    const monthTxs=AppState.transactions.filter(t=>{
+      const d=new Date(t.date+'T12:00');
+      return d.getMonth()===baseMonth && d.getFullYear()===baseYear && t.type!=='transfer';
+    });
+    renderBudgetMini(monthTxs,'budMiniStats');
+  }catch(e){}
 }
 
 function switchTemporal(mode){
-  S._tempMode = mode;
+  AppState._tempMode = mode;
   document.getElementById('btnHour').classList.toggle('on', mode==='hour');
   document.getElementById('btnDay').classList.toggle('on', mode==='day');
   document.getElementById('btnHour').style.color = mode==='hour' ? 'var(--br)' : 'var(--t2)';
@@ -2712,13 +1935,13 @@ function switchTemporal(mode){
 }
 
 function renderTemporalChart(){
-  const mode = S._tempMode || 'hour';
-  const p=S.period||'month';
-  const base=new Date(S.viewDate.getFullYear(),S.viewDate.getMonth(),1);
+  const mode = AppState._tempMode || 'hour';
+  const p=AppState.period||'month';
+  const base=new Date(AppState.viewDate.getFullYear(),AppState.viewDate.getMonth(),1);
   const winMonths = p==='quarter'?3 : p==='year'?12 : 1;
   const winStart  = new Date(base.getFullYear(), base.getMonth()-(winMonths-1), 1);
   const winEnd    = new Date(base.getFullYear(), base.getMonth()+1, 0);
-  const winExp=S.txs.filter(t=>t.type==='expense' && t.date>=fmtDate(winStart) && t.date<=fmtDate(winEnd));
+  const winExp=AppState.transactions.filter(t=>t.type==='expense' && t.date>=fmtDate(winStart) && t.date<=fmtDate(winEnd));
 
   if(mode === 'hour'){
     const hLabels=Array.from({length:24},(_,i)=>String(i).padStart(2,'0'));
@@ -2757,7 +1980,7 @@ function renderTemporalChart(){
 function makeChart(id,type,data,extraOpts={}){
   const canvas=document.getElementById(id);
   if(!canvas) return;
-  if(S.charts[id]) try{S.charts[id].destroy();}catch(e){}
+  if(AppState.charts[id]) try{AppState.charts[id].destroy();}catch(e){}
   const defaults = {
     responsive: true,
     maintainAspectRatio: false,
@@ -2782,7 +2005,7 @@ function makeChart(id,type,data,extraOpts={}){
         if (Array.isArray(ds.backgroundColor)) ds.backgroundColor = ds.backgroundColor.map(c => resolveCol(c));
       });
     }
-    S.charts[id] = new Chart(canvas.getContext('2d'), { type, data, options: Object.assign({}, defaults, extraOpts) });
+    AppState.charts[id] = new Chart(canvas.getContext('2d'), { type, data, options: Object.assign({}, defaults, extraOpts) });
   }catch(e){ console.warn('makeChart error',id,e); }
 }
 function renderHeatmap(year, month){
@@ -2790,7 +2013,7 @@ function renderHeatmap(year, month){
   if(!el) return;
   const dim=new Date(year,month+1,0).getDate();
   const dayExp={};
-  S.txs.filter(t=>{ const d=new Date(t.date+'T12:00'); return d.getMonth()===month&&d.getFullYear()===year&&t.type==='expense'; }).forEach(t=>{dayExp[t.date]=(dayExp[t.date]||0)+ +t.amount;});
+  AppState.transactions.filter(t=>{ const d=new Date(t.date+'T12:00'); return d.getMonth()===month&&d.getFullYear()===year&&t.type==='expense'; }).forEach(t=>{dayExp[t.date]=(dayExp[t.date]||0)+ +t.amount;});
   const maxE=Math.max(...Object.values(dayExp),1);
   const cells=Array.from({length:dim},(_,i)=>{
     const d=i+1;
@@ -2811,17 +2034,17 @@ function renderHeatmap(year, month){
 
 function openDayDetails(dateStr){
   haptic();
-  S._dayFocus=dateStr;
+  AppState._dayFocus=dateStr;
   renderDayDetails();
   openModal('dayM');
 }
 function renderDayDetails(){
-  const dateStr=S._dayFocus;
+  const dateStr=AppState._dayFocus;
   if(!dateStr) return;
   const d=new Date(dateStr+'T12:00');
   const title=d.toLocaleDateString('it-IT',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
   const tEl=document.getElementById('dayTitle'); if(tEl) tEl.textContent=title;
-  const dayTxs=S.txs.filter(t=>t.date===dateStr);
+  const dayTxs=AppState.transactions.filter(t=>t.date===dateStr);
   const dayIn=dayTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
   const dayOut=dayTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
   const totEl=document.getElementById('dayTotals');
@@ -2839,7 +2062,7 @@ function renderDayDetails(){
   lucide.createIcons();
 }
 function dayToNew(){
-  const dateStr=S._dayFocus;
+  const dateStr=AppState._dayFocus;
   closeAll(false);
   setTimeout(()=>{
     openAdd();
@@ -2856,7 +2079,7 @@ function renderCategoryBars(winExp){
   const entries=Object.entries(cats).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const max=entries[0]?.[1]||1;
   el.innerHTML=entries.map(([k,v])=>{
-    const c=CATS[k]||{l:k,col:'#888'};
+    const c=Categories[k]||{l:k,col:'#888'};
     const pct=Math.round(v/max*100);
     return `
       <div class="space-y-1 w-full">
@@ -2876,7 +2099,7 @@ function renderCategoryBars(winExp){
    PERIOD
 ============================================================ */
 function setPeriod(p){
-  S.period=p;
+  AppState.period=p;
   document.querySelectorAll('.ptab').forEach(b=>b.classList.remove('on'));
   document.getElementById('p'+p[0]).classList.add('on');
   renderCharts();
@@ -2885,7 +2108,7 @@ function setPeriod(p){
 /* ============================================================
    MONTH NAV
 ============================================================ */
-function changeMonth(d){ S.viewDate=new Date(S.viewDate.getFullYear(),S.viewDate.getMonth()+d,1); updateDash(); }
+function changeMonth(d){ AppState.viewDate=new Date(AppState.viewDate.getFullYear(),AppState.viewDate.getMonth()+d,1); updateDash(); }
 function prevMonth(){ changeMonth(-1); }
 function nextMonth(){ changeMonth(1); }
 function switchTabById(id){
@@ -2906,14 +2129,14 @@ function switchTab(name, el){
     try{ applyLayouts(); }catch(e){}
     if(name==='wallets') renderList();
     if(name==='stats') renderCharts();
-    if(S.layoutMode) refreshLayoutEditUI();
+    if(AppState.layoutMode) refreshLayoutEditUI();
     setTimeout(()=>{ try{ queueRevealScan(); }catch(e){} },40);
   };
 
   if(cur){
     cur.classList.add('leave');
-    clearTimeout(S._tabLeaveT);
-    S._tabLeaveT=setTimeout(showNext,220);
+    clearTimeout(AppState._tabLeaveT);
+    AppState._tabLeaveT=setTimeout(showNext,220);
   } else {
     showNext();
   }
@@ -2925,21 +2148,21 @@ function switchTab(name, el){
    SETTINGS
 ============================================================ */
 function applyTheme(){
-  document.body.classList.toggle('dark', CFG.theme==='dark'||(CFG.theme==='system'&&window.matchMedia('(prefers-color-scheme:dark)').matches));
+  document.body.classList.toggle('dark', UserConfig.theme==='dark'||(UserConfig.theme==='system'&&window.matchMedia('(prefers-color-scheme:dark)').matches));
   const mt=document.getElementById('metaTheme'); if(mt) mt.content=getComputedStyle(document.documentElement).getPropertyValue('--br').trim()||'#0066FF';
 }
 function applyColor(hex){
-  CFG.color=hex;
+  UserConfig.color=hex;
   document.documentElement.style.setProperty('--br',hex);
   const mt=document.getElementById('metaTheme'); if(mt) mt.content=hex;
 }
-function toggleDark(v){ CFG.theme=v?'dark':'light'; applyTheme(); saveCfg(); }
+function toggleDark(v){ UserConfig.theme=v?'dark':'light'; applyTheme(); saveConfig(); }
 function saveSettings(){
-  CFG.currency = document.getElementById('currS')?.value||'€';
-  CFG.defaultWallet = document.getElementById('defWalletS')?.value || CFG.defaultWallet || '';
-  CFG.goalName = document.getElementById('gNameI')?.value||'';
-  CFG.goalVal  = document.getElementById('gValI')?.value||'';
-  saveCfg(); renderAll();
+  UserConfig.currency = document.getElementById('currS')?.value||'€';
+  UserConfig.defaultWallet = document.getElementById('defWalletS')?.value || UserConfig.defaultWallet || '';
+  UserConfig.goalName = document.getElementById('gNameI')?.value||'';
+  UserConfig.goalVal  = document.getElementById('gValI')?.value||'';
+  saveConfig(); renderAll();
 }
 function updateSyncStatus(state){
   const dot=document.getElementById('sDot');
@@ -2959,27 +2182,39 @@ function buildColorPicker(){
   const el=document.getElementById('colorPick');
   if(!el) return;
   const colors=['#0066FF','#7C3AED','#FF3B5C','#FF9500','#00C896','#FF6B00','#5AC8FA','#FF2D55'];
-  el.innerHTML=colors.map(c=>`<div onclick="applyColor('${c}');saveCfg();buildColorPicker()" style="width:32px;height:32px;border-radius:50%;background:${c};cursor:pointer;border:3px solid ${CFG.color===c?'var(--t)':'transparent'};transition:.2s;box-shadow:${CFG.color===c?'0 0 0 2px '+c:'none'}"></div>`).join('');
+  el.innerHTML=colors.map(c=>`<div onclick="applyColor('${c}');saveConfig();buildColorPicker()" style="width:32px;height:32px;border-radius:50%;background:${c};cursor:pointer;border:3px solid ${UserConfig.color===c?'var(--t)':'transparent'};transition:.2s;box-shadow:${UserConfig.color===c?'0 0 0 2px '+c:'none'}"></div>`).join('');
 }
 function renderWalletSettings(){
   const el=document.getElementById('wList'); if(!el) return;
-  if(!CFG._accounts?.length){ el.innerHTML='<p class="text-xs py-2" style="color:var(--t2)">Nessun conto</p>'; return; }
+  if(!UserConfig._accounts?.length){
+    el.innerHTML=`<div class="rounded-2xl p-3 text-center" style="background:var(--bg2)">
+      <p class="text-xs font-bold" style="color:var(--t2)">Nessun conto. Creane uno per iniziare.</p>
+      <button onclick="openAccountSetup()" class="mt-2 px-3 py-2 rounded-xl text-xs font-black uppercase tracking-widest" style="background:rgba(0,102,255,.1);color:var(--br)">Crea conto</button>
+    </div>`;
+    return;
+  }
   const typeLabel={checking:'Corrente',savings:'Risparmi',cash:'Contanti',credit:'Credito',invest:'Investimenti'};
-  el.innerHTML=CFG._accounts.map(acc=>{
+  el.innerHTML=UserConfig._accounts.map(acc=>{
     const brand=detectBrand(acc.name);
     const iconEl=brand
       ? `<div class="ft-badge" style="width:32px;height:32px;border-radius:10px;background:${FINTECH_BRANDS[brand].bg};font-size:11px">${FINTECH_BRANDS[brand].text}</div>`
       : `<div style="width:32px;height:32px;border-radius:10px;background:${acc.color}22;display:flex;align-items:center;justify-content:center"><i data-lucide="${acc.icon||'wallet'}" style="width:14px;height:14px;color:${acc.color}"></i></div>`;
-    const bal=acc.currentBalance??DBS.computeBalance(acc.name);
-    return `<div class="flex items-center gap-2 py-2 px-3 rounded-2xl" style="background:var(--bg2)">
+    const bal=acc.currentBalance??DatabaseService.computeBalance(acc.name);
+    return `<div class="flex items-center gap-3 py-3 px-3 rounded-2xl" style="background:var(--bg2)">
       ${iconEl}
       <div class="flex-1 min-w-0">
-        <p class="text-xs font-bold truncate">${acc.name}</p>
-        <p class="text-[9px]" style="color:var(--t2)">${typeLabel[acc.type]||acc.type}${brand?' · '+FINTECH_BRANDS[brand].label:''}</p>
-        <p class="text-xs font-black" style="color:${bal<0?'var(--bd)':'var(--ok)'};font-variant-numeric:tabular-nums">${fmt(bal)}</p>
+        <div class="flex items-center justify-between gap-3">
+          <p class="text-sm font-bold truncate">${acc.name}</p>
+          <p class="text-sm font-black flex-shrink-0" style="color:${bal<0?'var(--bd)':'var(--ok)'};font-variant-numeric:tabular-nums">${fmt(bal)}</p>
+        </div>
+        <p class="text-[10px] font-bold truncate" style="color:var(--t2)">${typeLabel[acc.type]||acc.type}${brand?' · '+FINTECH_BRANDS[brand].label:''}</p>
       </div>
-      <input type="text" value="${acc.name}" onchange="renameWallet('${acc.id}',this.value,'${acc.name}')" class="inp w-20 py-1 text-xs text-right" placeholder="Rinomina">
-      <button onclick="removeWallet('${acc.id}')" class="p-1.5 rounded-xl flex-shrink-0" style="background:rgba(255,59,92,.1);color:var(--bd)"><i data-lucide="x" class="w-3.5 h-3.5"></i></button>
+      <button onclick="promptRenameWallet('${acc.id}')" class="p-2 rounded-xl flex-shrink-0" style="background:var(--card);border:1px solid var(--bo);color:var(--t2)" aria-label="Rinomina conto">
+        <i data-lucide="pencil" class="w-4 h-4"></i>
+      </button>
+      <button onclick="removeWallet('${acc.id}')" class="p-2 rounded-xl flex-shrink-0" style="background:rgba(255,59,92,.1);color:var(--bd)" aria-label="Elimina conto">
+        <i data-lucide="trash-2" class="w-4 h-4"></i>
+      </button>
     </div>`;
   }).join('');
   lucide.createIcons();
@@ -2987,7 +2222,7 @@ function renderWalletSettings(){
 
 async function recalcAllBalances(){
   toast('Ricalcolo saldi...','info');
-  await DBS.updateAllBalances();
+  await DatabaseService.updateAllBalances();
   renderWalletSettings();
   renderAll();
   toast('Saldi aggiornati ✓','success');
@@ -2995,7 +2230,7 @@ async function recalcAllBalances(){
 async function addWallet(){
   const n=document.getElementById('nWallet')?.value.trim();
   if(!n){toast('Inserisci un nome','warn');return;}
-  if(CFG._accounts?.find(a=>a.name===n)){toast('Conto già esistente','warn');return;}
+  if(UserConfig._accounts?.find(a=>a.name===n)){toast('Conto già esistente','warn');return;}
   const type=document.getElementById('nWalletType')?.value||'checking';
   const bal=parseFloat(document.getElementById('nWalletBal')?.value)||0;
   const color=_ACC_COLORS[_accColorIdx%_ACC_COLORS.length];
@@ -3004,20 +2239,71 @@ async function addWallet(){
   const acc={id:'lac'+Date.now(),name:n,type,color,icon,initialBalance:bal};
   document.getElementById('nWallet').value='';
   if(document.getElementById('nWalletBal')) document.getElementById('nWalletBal').value='';
-  await DBS.saveAccount(acc);
+  await DatabaseService.saveAccount(acc);
+  if(!UserConfig.defaultWallet){ UserConfig.defaultWallet=acc.name; saveConfig(); }
   renderWalletSettings(); populateWalletSel(); renderAll();
   toast(`Conto "${n}" aggiunto ✓`,'success');
 }
+function promptRenameWallet(id){
+  const acc=UserConfig._accounts?.find(a=>a.id===id);
+  if(!acc) return;
+  const next=prompt('Rinomina conto', acc.name);
+  if(next==null) return;
+  const newName=String(next).trim();
+  if(!newName || newName===acc.name) return;
+  renameWallet(id,newName,acc.name);
+}
 async function renameWallet(id,newName,oldName){
-  if(!newName?.trim()) return;
-  await DBS.renameAccount(id,newName.trim(),oldName);
+  const nn=String(newName||'').trim();
+  if(!nn) return;
+  if(UserConfig._accounts?.some(a=>a.name===nn && a.id!==id)){ toast('Nome già usato','warn'); return; }
+  // Update in-memory transactions (local + UI) immediately.
+  try{
+    AppState.transactions.forEach(t=>{
+      if(t.account===oldName) t.account=nn;
+      if(t.account_to===oldName) t.account_to=nn;
+    });
+    if(AppState._localMeta){
+      Object.values(AppState._localMeta).forEach(m=>{ if(m?.account_to===oldName) m.account_to=nn; });
+    }
+    saveTransactions();
+  }catch(e){}
+  if(UserConfig.defaultWallet===oldName){ UserConfig.defaultWallet=nn; saveConfig(); }
+  await DatabaseService.renameAccount(id,nn,oldName);
   renderWalletSettings(); populateWalletSel(); renderAll();
 }
 async function removeWallet(id){
-  if(CFG._accounts.length<=1){toast('Serve almeno un conto','warn');return;}
-  const acc=CFG._accounts.find(a=>a.id===id);
-  if(!confirm(`Elimina il conto "${acc?.name}"?`)) return;
-  await DBS.deleteAccount(id);
+  if(UserConfig._accounts.length<=1){toast('Serve almeno un conto','warn');return;}
+  const acc=UserConfig._accounts.find(a=>a.id===id);
+  if(!acc) return;
+  const target=UserConfig._accounts.find(a=>a.id!==id)?.name||'';
+  const impacted=AppState.transactions.filter(t=>t.account===acc.name || t.account_to===acc.name).length;
+  if(impacted>0){
+    if(!target){ toast('Impossibile: manca un conto di destinazione','error'); return; }
+    if(!confirm(`Il conto "${acc.name}" è usato in ${impacted} movimenti.\n\nVuoi spostarli su "${target}" e poi eliminarlo?`)) return;
+    try{
+      AppState.transactions.forEach(t=>{
+        if(t.account===acc.name) t.account=target;
+        if(t.account_to===acc.name) t.account_to=target;
+      });
+      if(AppState._localMeta){
+        Object.values(AppState._localMeta).forEach(m=>{ if(m?.account_to===acc.name) m.account_to=target; });
+      }
+      saveTransactions();
+    }catch(e){}
+    // Keep DB consistent (best effort).
+    if(!OFFLINE && db){
+      try{
+        await db.from('transactions').update({account:target}).eq('account',acc.name);
+        await db.from('transaction_meta').update({account_to:target}).eq('account_to',acc.name);
+      }catch(e){ console.warn('accounts.reassign',e); }
+    }
+    if(UserConfig.defaultWallet===acc.name){ UserConfig.defaultWallet=target; saveConfig(); }
+  } else {
+    if(!confirm(`Elimina il conto "${acc.name}"?`)) return;
+    if(UserConfig.defaultWallet===acc.name){ UserConfig.defaultWallet=target; saveConfig(); }
+  }
+  await DatabaseService.deleteAccount(id);
   renderWalletSettings(); populateWalletSel(); renderAll();
   toast('Conto eliminato','warn');
 }
@@ -3025,7 +2311,7 @@ function buildBudgetList(){
   const el=document.getElementById('budList');
   if(!el) return;
   el.innerHTML=Object.entries(CATS).map(([k,c])=>{
-    const v=CFG.budgets[k]||'';
+    const v=UserConfig.budgets[k]||'';
     return `<div class="flex items-center gap-2 py-1.5">
       <div class="w-2.5 h-2.5 rounded-full flex-shrink-0" style="background:${c.col}"></div>
       <span class="text-xs font-bold flex-1">${c.l}</span>
@@ -3034,13 +2320,13 @@ function buildBudgetList(){
   }).join('');
 }
 function setBudget(cat,v){
-  DBS.saveBudget(cat,v).then(()=>renderAll());
+  DatabaseService.saveBudget(cat,v).then(()=>renderAll());
 }
 function renderAchievements(){
   const el=document.getElementById('achList');
   if(!el) return;
   el.innerHTML=ACHS.map(a=>{
-    const unlocked=CFG.ach[a.id];
+    const unlocked=UserConfig.ach[a.id];
     return `<div class="flex flex-col items-center text-center gap-1 p-2 rounded-xl" style="background:${unlocked?'rgba(0,102,255,.08)':'var(--bg2)'}">
       <span class="text-2xl" style="filter:${unlocked?'none':'grayscale(1) opacity(.35)'}">${a.e}</span>
       <p class="text-[9px] font-bold leading-tight" style="color:${unlocked?'var(--t)':'var(--t3)'}">${a.t}</p>
@@ -3049,9 +2335,9 @@ function renderAchievements(){
 }
 function checkAch(){
   ACHS.forEach(a=>{
-    if(!CFG.ach[a.id] && a.fn(S.txs,CFG)){
-      CFG.ach[a.id]=Date.now();
-      saveCfg();
+    if(!UserConfig.ach[a.id] && a.fn(AppState.transactions,UserConfig)){
+      UserConfig.ach[a.id]=Date.now();
+      saveConfig();
       launchConfetti();
       const pop=document.getElementById('achPop');
       document.getElementById('achIco').textContent=a.e;
@@ -3067,25 +2353,25 @@ function checkAch(){
    EXPORT
 ============================================================ */
 function exportCSV(){
-  if(!S.txs.length){toast('Nessun dato','warn');return;}
+  if(!AppState.transactions.length){toast('Nessun dato','warn');return;}
   const esc=v=>`"${String(v??'').replace(/\"/g,'\"\"')}"`;
   let csv='Data,Ora,Tipo,Importo,Categoria,Conto,ContoDest,Nota,Tag\n';
-  S.txs.forEach(t=>{
-    csv+=`${t.date},${normTime(t.time)||''},${t.type},${t.amount},${CATS[t.category_id]?.l||'Altro'},${t.account||''},${t.account_to||''},${esc(t.description||'')},${esc(t.tags||'[]')}\n`;
+  AppState.transactions.forEach(t=>{
+    csv+=`${t.date},${normTime(t.time)||''},${t.type},${t.amount},${Categories[t.category_id]?.l||'Altro'},${t.account||''},${t.account_to||''},${esc(t.description||'')},${esc(t.tags||'[]')}\n`;
   });
   download(new Blob([csv],{type:'text/csv;charset=utf-8;'}),`MoneyProX_${td()}.csv`);
   toast('CSV esportato ✓','success');
   unlockAch('export');
 }
 function exportJSON(){
-  download(new Blob([JSON.stringify({txs:S.txs,cfg:CFG},null,2)],{type:'application/json'}),`MoneyProX_Backup_${td()}.json`);
-  CFG.lastBackup=Date.now();
-  saveCfg();
+  download(new Blob([JSON.stringify({txs:AppState.transactions,cfg:UserConfig},null,2)],{type:'application/json'}),`MoneyProX_Backup_${td()}.json`);
+  UserConfig.lastBackup=Date.now();
+  saveConfig();
   toast('Backup esportato ✓','success');
   unlockAch('export');
 }
 function unlockAch(id){
-  if(!CFG.ach[id]){CFG.ach[id]=Date.now();saveCfg();renderAchievements();}
+  if(!UserConfig.ach[id]){UserConfig.ach[id]=Date.now();saveConfig();renderAchievements();}
 }
 /* ============================================================
    WIPE
@@ -3093,10 +2379,10 @@ function unlockAch(id){
 async function wipeAll(){
   if(prompt('Digita "RESET" per confermare')!=='RESET') return;
   // local
-  S.txs=[]; S._localMeta={};
-  saveTxs();
-  CFG.budgets={}; CFG.templates=[]; CFG.notes=[]; CFG.ach={};
-  CFG.debts=[]; CFG.subscriptions=[]; CFG.goals=[];
+  AppState.transactions=[]; AppState._localMeta={};
+  saveTransactions();
+  UserConfig.budgets={}; UserConfig.templates=[]; UserConfig.notes=[]; UserConfig.ach={};
+  UserConfig.debts=[]; UserConfig.subscriptions=[]; UserConfig.goals=[];
   localStorage.setItem('mpx_acc','[]');
   localStorage.setItem('mpx_bud','{}');
   localStorage.setItem('mpx_notes','[]');
@@ -3132,14 +2418,7 @@ async function wipeAll(){
 /* ============================================================
    TOAST
 ============================================================ */
-function toast(msg, type='info'){
-  const col=type==='success'?'var(--ok)':type==='error'?'var(--bd)':type==='warn'?'var(--wn)':'var(--br)';
-  const t=document.createElement('div');
-  t.style.cssText=`position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:var(--card);border:1.5px solid ${col};color:var(--t);padding:.6rem 1.1rem;border-radius:2rem;font-size:.82rem;font-weight:600;box-shadow:var(--shL);z-index:9999;white-space:nowrap;animation:slideUp .3s ease both`;
-  t.innerHTML=msg;
-  document.getElementById('toasts')?.appendChild(t);
-  setTimeout(()=>t.remove(),3200);
-}
+// toast moved to ui.js
 
 /* ============================================================
    CONFETTI
@@ -3167,8 +2446,8 @@ function buildCalc(){
   if(!el) return;
   const keys=[
     {l:'C',cl:'op',fn:()=>updCalc('')},
-    {l:'±',cl:'op',fn:()=>{const v=-parseFloat(S.calcDisp||0);updCalc(v);}},
-    {l:'%',cl:'op',fn:()=>{const v=parseFloat(S.calcDisp||0)/100;updCalc(v);}},
+    {l:'±',cl:'op',fn:()=>{const v=-parseFloat(AppState.calcDisp||0);updCalc(v);}},
+    {l:'%',cl:'op',fn:()=>{const v=parseFloat(AppState.calcDisp||0)/100;updCalc(v);}},
     {l:'÷',cl:'op fn',fn:()=>calcOp('/')},
     {l:'7',cl:'num',fn:()=>calcNum('7')},{l:'8',cl:'num',fn:()=>calcNum('8')},{l:'9',cl:'num',fn:()=>calcNum('9')},
     {l:'×',cl:'op fn',fn:()=>calcOp('*')},
@@ -3183,18 +2462,18 @@ function buildCalc(){
 }
 let calcOp_={val:0,op:null,newNum:true};
 function calcNum(n){
-  if(calcOp_.newNum){S.calcDisp='';calcOp_.newNum=false;}
-  if(n==='.'&&S.calcDisp.includes('.')) return;
-  S.calcDisp=(S.calcDisp==='0'&&n!=='.')?n:(S.calcDisp||'')+n;
-  const el=document.getElementById('calcDisp');if(el) el.textContent=S.calcDisp;
+  if(calcOp_.newNum){AppState.calcDisp='';calcOp_.newNum=false;}
+  if(n==='.'&&AppState.calcDisp.includes('.')) return;
+  AppState.calcDisp=(AppState.calcDisp==='0'&&n!=='.')?n:(AppState.calcDisp||'')+n;
+  const el=document.getElementById('calcDisp');if(el) el.textContent=AppState.calcDisp;
 }
 function calcOp(op){
-  calcOp_.val=parseFloat(S.calcDisp||0);calcOp_.op=op;calcOp_.newNum=true;
-  const el=document.getElementById('calcDisp');if(el) el.textContent=S.calcDisp+(op==='*'?'×':op==='/'?'÷':op);
+  calcOp_.val=parseFloat(AppState.calcDisp||0);calcOp_.op=op;calcOp_.newNum=true;
+  const el=document.getElementById('calcDisp');if(el) el.textContent=AppState.calcDisp+(op==='*'?'×':op==='/'?'÷':op);
 }
 function calcEq(){
   if(!calcOp_.op) return;
-  const b=parseFloat(S.calcDisp||0);
+  const b=parseFloat(AppState.calcDisp||0);
   let res=0;
   if(calcOp_.op==='+') res=calcOp_.val+b;
   if(calcOp_.op==='-') res=calcOp_.val-b;
@@ -3204,9 +2483,9 @@ function calcEq(){
   updCalc(res);calcOp_={val:0,op:null,newNum:true};
 }
 function updCalc(v){
-  S.calcDisp=v.toString();
-  S.calcVal=parseFloat(v)||0;
-  const el=document.getElementById('calcDisp');if(el) el.textContent=S.calcDisp||'0';
+  AppState.calcDisp=v.toString();
+  AppState.calcVal=parseFloat(v)||0;
+  const el=document.getElementById('calcDisp');if(el) el.textContent=AppState.calcDisp||'0';
 }
 function useCalcAmt(){
   const v=parseFloat(document.getElementById('calcDisp')?.textContent||0);
@@ -3225,11 +2504,11 @@ function useCalcAmt(){
 // 1. TOGGLE BALANCE VISIBILITY
 function renderBalToggleBtn(){
   const btn=document.getElementById('balToggleBtn');
-  if(btn) btn.innerHTML=`<i data-lucide="${CFG.showBalance?'eye':'eye-off'}" class="w-3.5 h-3.5" style="color:var(--t2)"></i>`;
+  if(btn) btn.innerHTML=`<i data-lucide="${UserConfig.showBalance?'eye':'eye-off'}" class="w-3.5 h-3.5" style="color:var(--t2)"></i>`;
 }
 function toggleBalanceVisibility(){
-  CFG.showBalance=!CFG.showBalance;
-  saveCfg();
+  UserConfig.showBalance=!UserConfig.showBalance;
+  saveConfig();
   updateDash();
   renderBalToggleBtn();
   lucide.createIcons();
@@ -3237,7 +2516,7 @@ function toggleBalanceVisibility(){
 
 // 2. SEARCH FILTER WALLET
 function setTF(type){
-  S.txFilter=type;
+  AppState.txFilter=type;
   ['ftA','ftE','ftI'].forEach(id=>{
     const b=document.getElementById(id);
     if(!b) return;
@@ -3252,8 +2531,8 @@ function filterTxType(type){ setTF(type); }
 
 // 3. ADVANCED FILTERS TOGGLE
 function toggleAdv(){
-  S.advOpen=!S.advOpen;
-  document.getElementById('advF')?.classList.toggle('hidden',!S.advOpen);
+  AppState.advOpen=!AppState.advOpen;
+  document.getElementById('advF')?.classList.toggle('hidden',!AppState.advOpen);
   haptic();
 }
 
@@ -3265,8 +2544,8 @@ function clearFilters(){
   document.getElementById('fMin').value='';
   document.getElementById('fMax').value='';
   document.getElementById('fCat').value='';
-  S.wFilter='all'; S.txFilter='all';
-  S.advOpen=false;
+  AppState.wFilter='all'; AppState.txFilter='all';
+  AppState.advOpen=false;
   document.getElementById('advF')?.classList.add('hidden');
   renderList(); renderWallets({}, 0);
 }
@@ -3281,12 +2560,12 @@ function smartSearch(){
 // 6. TEMPLATES — SAVE TX AS TEMPLATE
 async function saveAsTemplate(id){
   haptic();
-  const t=S.txs.find(x=>x.id===id);
+  const t=AppState.transactions.find(x=>x.id===id);
   if(!t) return;
-  const name=prompt('Nome template:',t.description||CATS[t.category_id]?.l||'Template');
+  const name=prompt('Nome template:',t.description||Categories[t.category_id]?.l||'Template');
   if(!name) return;
-  if(!CFG.templates) CFG.templates=[];
-  await DBS.addTemplate({name,type:t.type,amount:t.amount,category_id:t.category_id,account:t.account,account_to:t.account_to,tags:t.tags});
+  if(!UserConfig.templates) UserConfig.templates=[];
+  await DatabaseService.addTemplate({name,type:t.type,amount:t.amount,category_id:t.category_id,account:t.account,account_to:t.account_to,tags:t.tags});
   toast('Template salvato ✓','success');
   unlockAch('tpl');
 }
@@ -3300,9 +2579,9 @@ function openTemplates(){
 function renderTemplateList(){
   const el=document.getElementById('tplList');
   if(!el) return;
-  if(!CFG.templates||!CFG.templates.length){el.innerHTML=emptyEl('Nessun template salvato');lucide.createIcons();return;}
-  el.innerHTML=CFG.templates.map((tpl,i)=>{
-    const c=CATS[tpl.category_id]||CATS.other;
+  if(!UserConfig.templates||!UserConfig.templates.length){el.innerHTML=emptyEl('Nessun template salvato');lucide.createIcons();return;}
+  el.innerHTML=UserConfig.templates.map((tpl,i)=>{
+    const c=Categories[tpl.category_id]||Categories.other;
     const col=tpl.type==='expense'?'var(--bd)':tpl.type==='income'?'var(--ok)':'var(--wn)';
     const tid=tpl.id||i;
     return `<div class="flex items-center gap-3 py-3 border-b last:border-0" style="border-color:var(--bo)">
@@ -3320,7 +2599,7 @@ function renderTemplateList(){
   lucide.createIcons();
 }
 function useTemplate(i){
-  const tpl=CFG.templates[i];
+  const tpl=UserConfig.templates[i];
   if(!tpl) return;
   closeAll();
   setTimeout(()=>{
@@ -3333,35 +2612,35 @@ function useTemplate(i){
   },200);
 }
 async function deleteTemplate(i){
-  const tpl=CFG.templates[i]; if(!tpl) return;
-  await DBS.deleteTemplate(tpl.id||i);
+  const tpl=UserConfig.templates[i]; if(!tpl) return;
+  await DatabaseService.deleteTemplate(tpl.id||i);
   renderTemplateList();
 }
 
 // 8. SPLIT BILL
 function openSplit(){
   haptic();
-  S.splitN=2;
+  AppState.splitN=2;
   const sN=document.getElementById('splitN'); if(sN) sN.textContent=2;
   const sA=document.getElementById('splitAmt'); if(sA) sA.value='';
   const sR=document.getElementById('splitRes'); if(sR) sR.textContent=fmt(0);
   openModal('splitM');
 }
 function splitAdj(d){
-  S.splitN=Math.max(2,Math.min(20,S.splitN+d));
-  const _sN=document.getElementById('splitN'); if(_sN) _sN.textContent=S.splitN;
+  AppState.splitN=Math.max(2,Math.min(20,AppState.splitN+d));
+  const _sN=document.getElementById('splitN'); if(_sN) _sN.textContent=AppState.splitN;
   calcSplit();haptic();
 }
 function calcSplit(){
   const _sA=document.getElementById('splitAmt');
   const amt=parseFloat(_sA?.value)||0;
-  const res=Math.ceil((amt/S.splitN)*100)/100;
+  const res=Math.ceil((amt/AppState.splitN)*100)/100;
   const _sR=document.getElementById('splitRes'); if(_sR) _sR.textContent=fmt(res);
 }
 function splitToTx(){
   const amt=parseFloat(document.getElementById('splitAmt')?.value)||0;
   if(!amt){toast('Inserisci l\'importo','warn');return;}
-  const myShare=Math.ceil((amt/S.splitN)*100)/100;
+  const myShare=Math.ceil((amt/AppState.splitN)*100)/100;
   closeAll();
   setTimeout(()=>{ openAdd(); document.getElementById('txAmt').value=myShare; toast(`La tua quota: ${fmt(myShare)}`,'success'); },200);
 }
@@ -3375,7 +2654,7 @@ function openConv(){
   setTimeout(()=>document.getElementById('convAmt')?.select(),50);
 }
 function buildConvOptions(){
-  const rates=CFG.fx||{EUR:1,USD:1.08,GBP:0.86,JPY:163,CHF:0.96,CAD:1.47};
+  const rates=UserConfig.fx||{EUR:1,USD:1.08,GBP:0.86,JPY:163,CHF:0.96,CAD:1.47};
   const keys=Object.keys(rates);
   const from=document.getElementById('convFrom');
   const to=document.getElementById('convTo');
@@ -3400,7 +2679,7 @@ function doConvert(){
   const from=document.getElementById('convFrom')?.value||'EUR';
   const to=document.getElementById('convTo')?.value||'USD';
   const amt=parseFloat(document.getElementById('convAmt')?.value)||1;
-  const rates=CFG.fx||{EUR:1,USD:1.08,GBP:0.86,JPY:163,CHF:0.96,CAD:1.47};
+  const rates=UserConfig.fx||{EUR:1,USD:1.08,GBP:0.86,JPY:163,CHF:0.96,CAD:1.47};
   const fromRate=rates[from]||1;
   const toRate=rates[to]||1;
   const result=(amt/fromRate)*toRate;
@@ -3414,7 +2693,7 @@ function convToTx(){
   const from=document.getElementById('convFrom')?.value||'EUR';
   const to=document.getElementById('convTo')?.value||'USD';
   const amt=parseFloat(document.getElementById('convAmt')?.value)||0;
-  const rates=CFG.fx||{};
+  const rates=UserConfig.fx||{};
   const fromRate=rates[from]||1;
   const toRate=rates[to]||1;
   const result=Math.round((amt/fromRate)*toRate*100)/100;
@@ -3446,7 +2725,7 @@ function getAlertItems(){
   try{
     const b=checkBudgetAlerts();
     b.sort((a,b)=>b.pct-a.pct).forEach(a=>{
-      const c=CATS[a.cat]||CATS.other;
+    const c=Categories[a.cat]||Categories.other;
       const pct=Math.round(a.pct*100);
       items.push({
         level:a.level,
@@ -3461,7 +2740,7 @@ function getAlertItems(){
 
   // Subs due soon
   try{
-    const due=(CFG.subscriptions||[]).filter(s=>s.active).map(s=>({s,days:_daysUntil(s.nextDate)})).filter(x=>x.days>=0&&x.days<=7);
+    const due=(UserConfig.subscriptions||[]).filter(s=>s.active).map(s=>({s,days:_daysUntil(s.nextDate)})).filter(x=>x.days>=0&&x.days<=7);
     if(due.length){
       due.sort((a,b)=>a.days-b.days);
       const next=due[0];
@@ -3478,7 +2757,7 @@ function getAlertItems(){
 
   // Debts pending
   try{
-    const pending=(CFG.debts||[]).filter(d=>!d.settled);
+    const pending=(UserConfig.debts||[]).filter(d=>!d.settled);
     if(pending.length){
       const total=pending.reduce((s,d)=>s+(+d.amount||0),0);
       items.push({
@@ -3509,8 +2788,8 @@ function getAlertItems(){
 
   // Low balances (negative)
   try{
-    if(typeof DBS!=='undefined' && DBS.computeBalance && CFG._accounts?.length){
-      const lows=CFG._accounts.map(a=>({name:a.name,bal:DBS.computeBalance(a.name)})).filter(x=>x.bal<0).sort((a,b)=>a.bal-b.bal);
+    if(typeof DBS!=='undefined' && DatabaseService.computeBalance && UserConfig._accounts?.length){
+      const lows=UserConfig._accounts.map(a=>({name:a.name,bal:DatabaseService.computeBalance(a.name)})).filter(x=>x.bal<0).sort((a,b)=>a.bal-b.bal);
       if(lows.length){
         const worst=lows[0];
         items.push({
@@ -3527,7 +2806,7 @@ function getAlertItems(){
 
   // Backup reminder
   try{
-    const last=CFG.lastBackup||0;
+    const last=UserConfig.lastBackup||0;
     if(last){
       const days=Math.floor((Date.now()-last)/(1000*60*60*24));
       if(days>7){
@@ -3684,9 +2963,9 @@ function cmdSearch(){
   }).slice(0,8);
 
   const txs = q.length>=2
-    ? S.txs.filter(t=>{
+    ? AppState.transactions.filter(t=>{
         const desc=(t.description||'').toLowerCase();
-        const cat=(CATS[t.category_id]?.l||'').toLowerCase();
+        const cat=(Categories[t.category_id]?.l||'').toLowerCase();
         const acc=(t.account||'').toLowerCase();
         return desc.includes(q) || cat.includes(q) || acc.includes(q);
       }).slice(0,8)
@@ -3713,7 +2992,7 @@ function cmdSearch(){
     html+=txs.map(t=>{
       if(!first) first={type:'tx', id:t.id};
       const isTransfer=(t.type==='transfer');
-      const c=isTransfer ? {l:'Trasferimento',ic:'arrow-right-left',col:'#FF9500',bg:'rgba(255,149,0,.12)'} : (CATS[t.category_id]||CATS.other);
+      const c=isTransfer ? {l:'Trasferimento',ic:'arrow-right-left',col:'#FF9500',bg:'rgba(255,149,0,.12)'} : (Categories[t.category_id]||Categories.other);
       const amtCol=t.type==='expense'?'var(--bd)':t.type==='income'?'var(--ok)':'var(--wn)';
       const sign=t.type==='expense'?'−':t.type==='income'?'+':'⇄';
       const dStr=new Date(t.date+'T12:00').toLocaleDateString('it-IT',{day:'2-digit',month:'short'});
@@ -3738,15 +3017,15 @@ function cmdSearch(){
     </div>`;
   }
 
-  S._cmdFirst=first;
+  AppState._cmdFirst=first;
   el.innerHTML=html;
   lucide.createIcons();
 }
 function cmdKey(e){
   if(e.key==='Enter'){
     e.preventDefault();
-    if(S._cmdFirst?.type==='action') cmdRunAction(S._cmdFirst.id);
-    if(S._cmdFirst?.type==='tx') cmdOpenTx(S._cmdFirst.id);
+    if(AppState._cmdFirst?.type==='action') cmdRunAction(AppState._cmdFirst.id);
+    if(AppState._cmdFirst?.type==='tx') cmdOpenTx(AppState._cmdFirst.id);
   }
 }
 function cmdRunAction(id){
@@ -3770,17 +3049,17 @@ async function addNote(){
   const inp=document.getElementById('noteInp');
   const txt=inp?.value.trim();
   if(!txt){toast('Scrivi qualcosa prima','warn');return;}
-  if(!CFG.notes) CFG.notes=[];
-  await DBS.addNote(txt);
+  if(!UserConfig.notes) UserConfig.notes=[];
+  await DatabaseService.addNote(txt);
   inp.value='';
   renderNotesList();
   haptic();
 }
 function renderNotesList(){
   const el=document.getElementById('notesList');
-  if(!el||!CFG.notes) return;
-  if(!CFG.notes.length){el.innerHTML='<p class="text-sm text-center py-4" style="color:var(--t2)">Nessuna nota ancora</p>';return;}
-  el.innerHTML=CFG.notes.map(n=>`
+  if(!el||!UserConfig.notes) return;
+  if(!UserConfig.notes.length){el.innerHTML='<p class="text-sm text-center py-4" style="color:var(--t2)">Nessuna nota ancora</p>';return;}
+  el.innerHTML=UserConfig.notes.map(n=>`
     <div class="flex items-start gap-3 p-3 rounded-xl" style="background:var(--bg2)">
       <button onclick="toggleNote('${n.id}')" class="w-5 h-5 rounded-full border-2 flex items-center justify-center flex-shrink-0 mt-0.5 transition-all" style="border-color:${n.done?'var(--ok)':'var(--bo)'}; background:${n.done?'var(--ok)':'transparent'}">
         ${n.done?'<svg width="10" height="10" viewBox="0 0 12 12"><polyline points="2,6 5,9 10,3" stroke="white" stroke-width="2" fill="none"/></svg>':''}
@@ -3791,12 +3070,12 @@ function renderNotesList(){
   lucide.createIcons();
 }
 async function toggleNote(id){
-  const n=CFG.notes.find(x=>x.id===id); if(!n) return;
-  await DBS.updateNote(id,{done:!n.done});
+  const n=UserConfig.notes.find(x=>x.id===id); if(!n) return;
+  await DatabaseService.updateNote(id,{done:!n.done});
   renderNotesList();
 }
 async function deleteNote(id){
-  await DBS.deleteNote(id);
+  await DatabaseService.deleteNote(id);
   renderNotesList();
 }
 
@@ -3809,14 +3088,14 @@ function openRecurring(){
 function renderRecurringList(){
   const el=document.getElementById('recList');
   if(!el) return;
-  const txsWithTag=S.txs.filter(t=>{
+  const txsWithTag=AppState.transactions.filter(t=>{
     try{ return (typeof t.tags==='string'?JSON.parse(t.tags):[]).includes('ricorrente'); }catch(e){return false;}
   });
   const grouped={};
   txsWithTag.forEach(t=>{const k=t.description+'|'+t.amount+'|'+t.category_id; grouped[k]=(grouped[k]||[]);grouped[k].push(t);});
   if(!Object.keys(grouped).length){el.innerHTML=emptyEl('Nessuna spesa ricorrente — aggiungine una con il tag "Ricorrente"');lucide.createIcons();return;}
   el.innerHTML=`<div class="space-y-0.5 mt-2">`+Object.entries(grouped).map(([k,txs])=>{
-    const t=txs[0];const c=CATS[t.category_id]||CATS.other;
+    const t=txs[0];const c=Categories[t.category_id]||Categories.other;
     const total=txs.reduce((s,x)=>s+ +x.amount,0);
     return `<div class="flex items-center gap-3 py-3 border-b last:border-0" style="border-color:var(--bo)">
       <div class="w-10 h-10 rounded-2xl flex items-center justify-center" style="background:${c.bg}"><i data-lucide="${c.ic}" class="w-4 h-4" style="color:${c.col}"></i></div>
@@ -3849,34 +3128,34 @@ async function addDebt(){
   const note=document.getElementById('debtNote')?.value.trim()||'';
   if(!person){toast('Inserisci il nome della persona','warn');return;}
   if(!amt||amt<=0){toast('Inserisci un importo valido','error');return;}
-  if(!CFG.debts) CFG.debts=[];
+  if(!UserConfig.debts) UserConfig.debts=[];
   const debt={person,amount:amt,type:debtType,note,date:fmtDate(new Date()),settled:false};
-  await DBS.saveDebt(debt);
+  await DatabaseService.saveDebt(debt);
   document.getElementById('debtPerson').value='';
   document.getElementById('debtAmt').value='';
   document.getElementById('debtNote').value='';
-  saveCfg(); renderDebtsList(); renderDebtsMini();
+  saveConfig(); renderDebtsList(); renderDebtsMini();
   toast(`${debtType==='borrow'?'Credito':'Debito'} con ${person} aggiunto ✓`,'success');
 }
 async function settleDebt(id){
   haptic();
-  if(!CFG.debts) return;
-  const d=CFG.debts.find(x=>idEq(x.id,id));
+  if(!UserConfig.debts) return;
+  const d=UserConfig.debts.find(x=>idEq(x.id,id));
   if(!d) return;
   const next=!d.settled;
-  await DBS.updateDebt(d.id,{settled:next});
-  saveCfg(); renderDebtsList(); renderDebtsMini();
+  await DatabaseService.updateDebt(d.id,{settled:next});
+  saveConfig(); renderDebtsList(); renderDebtsMini();
   toast(next?'Segnato come saldato ✓':'Riaperto','success');
 }
 async function deleteDebt(id){
-  if(!CFG.debts) return;
-  await DBS.deleteDebt(id);
-  saveCfg(); renderDebtsList(); renderDebtsMini();
+  if(!UserConfig.debts) return;
+  await DatabaseService.deleteDebt(id);
+  saveConfig(); renderDebtsList(); renderDebtsMini();
 }
 function renderDebtsList(){
   const el=document.getElementById('debtsList');
   if(!el) return;
-  const debts=(CFG.debts||[]);
+  const debts=(UserConfig.debts||[]);
   if(!debts.length){el.innerHTML='<p class="text-sm text-center py-4" style="color:var(--t2)">Nessun debito o credito</p>';return;}
   const active=debts.filter(d=>!d.settled);
   const settled=debts.filter(d=>d.settled);
@@ -3902,7 +3181,7 @@ function renderDebtsList(){
 function renderDebtsMini(){
   const el=document.getElementById('debtsMini');
   if(!el) return;
-  const debts=(CFG.debts||[]).filter(d=>!d.settled);
+  const debts=(UserConfig.debts||[]).filter(d=>!d.settled);
   if(!debts.length){el.innerHTML='<p class="text-xs" style="color:var(--t2)">Nessun debito in sospeso</p>';return;}
   const totalBorrow=debts.filter(d=>d.type==='borrow').reduce((s,d)=>s+d.amount,0);
   const totalLend=debts.filter(d=>d.type==='lend').reduce((s,d)=>s+d.amount,0);
@@ -3913,7 +3192,7 @@ function renderDebtsMini(){
 }
 function openDebtsM(){
   haptic();
-  if(!CFG.debts) CFG.debts=[];
+  if(!UserConfig.debts) UserConfig.debts=[];
   setDebtType('borrow');
   renderDebtsList();
   openModal('debtsM');
@@ -3929,24 +3208,24 @@ async function addSubscription(){
   const next=document.getElementById('subNextDate')?.value||fmtDate(new Date());
   if(!name){toast('Inserisci il nome','warn');return;}
   if(!amt||amt<=0){toast('Inserisci un importo valido','error');return;}
-  if(!CFG.subscriptions) CFG.subscriptions=[];
+  if(!UserConfig.subscriptions) UserConfig.subscriptions=[];
   const sub={name,amount:amt,frequency:freq,nextDate:next,active:true};
-  await DBS.saveSub(sub);
+  await DatabaseService.saveSub(sub);
   document.getElementById('subName').value='';
   document.getElementById('subAmt').value='';
-  saveCfg(); renderSubsList(); renderSubsMini();
+  saveConfig(); renderSubsList(); renderSubsMini();
   toast(`${name} aggiunto ✓`,'success');
 }
 async function toggleSub(id){
-  const s=(CFG.subscriptions||[]).find(x=>idEq(x.id,id));
+  const s=(UserConfig.subscriptions||[]).find(x=>idEq(x.id,id));
   if(!s) return;
   s.active=!s.active;
-  await DBS.saveSub(s);
-  saveCfg(); renderSubsList(); renderSubsMini();
+  await DatabaseService.saveSub(s);
+  saveConfig(); renderSubsList(); renderSubsMini();
 }
 async function deleteSub(id){
-  await DBS.deleteSub(id);
-  saveCfg(); renderSubsList(); renderSubsMini();
+  await DatabaseService.deleteSub(id);
+  saveConfig(); renderSubsList(); renderSubsMini();
 }
 function subMonthlyAmount(s){
   if(s.frequency==='monthly') return s.amount;
@@ -3957,7 +3236,7 @@ function subMonthlyAmount(s){
 function renderSubsList(){
   const el=document.getElementById('subsList');
   if(!el) return;
-  const subs=(CFG.subscriptions||[]);
+  const subs=(UserConfig.subscriptions||[]);
   if(!subs.length){el.innerHTML='<p class="text-sm text-center py-4" style="color:var(--t2)">Nessun abbonamento</p>';return;}
   const monthly=subs.filter(s=>s.active).reduce((t,s)=>t+subMonthlyAmount(s),0);
   const yearly=monthly*12;
@@ -3992,7 +3271,7 @@ function renderSubsList(){
 function renderSubsMini(){
   const el=document.getElementById('subsMini');
   if(!el) return;
-  const subs=(CFG.subscriptions||[]).filter(s=>s.active);
+  const subs=(UserConfig.subscriptions||[]).filter(s=>s.active);
   if(!subs.length){el.innerHTML='<p class="text-xs" style="color:var(--t2)">Nessun abbonamento attivo</p>';return;}
   const monthly=subs.reduce((t,s)=>t+subMonthlyAmount(s),0);
   el.innerHTML=`<div class="flex justify-between items-center">
@@ -4002,7 +3281,7 @@ function renderSubsMini(){
 }
 function openSubsM(){
   haptic();
-  if(!CFG.subscriptions) CFG.subscriptions=[];
+  if(!UserConfig.subscriptions) UserConfig.subscriptions=[];
   const now=new Date(); now.setDate(now.getDate()+30);
   document.getElementById('subNextDate').valueAsDate=now;
   renderSubsList();
@@ -4019,33 +3298,33 @@ async function addGoal(){
   const deadline=document.getElementById('goalDeadlineI')?.value||'';
   if(!name){toast('Inserisci un nome per l\'obiettivo','warn');return;}
   if(!target||target<=0){toast('Inserisci un target valido','error');return;}
-  if(!CFG.goals) CFG.goals=[];
-  await DBS.saveGoal({name,target,current:Math.min(current,target),deadline,completed:false});
+  if(!UserConfig.goals) UserConfig.goals=[];
+  await DatabaseService.saveGoal({name,target,current:Math.min(current,target),deadline,completed:false});
   document.getElementById('goalNameI').value='';
   document.getElementById('goalTargetI').value='';
   document.getElementById('goalCurrentI').value='';
-  saveCfg(); renderGoalsList();
+  saveConfig(); renderGoalsList();
   toast(`Obiettivo "${name}" aggiunto ✓`,'success');
 }
 async function deleteGoal(id){
-  await DBS.deleteGoal(id);
-  saveCfg(); renderGoalsList();
+  await DatabaseService.deleteGoal(id);
+  saveConfig(); renderGoalsList();
 }
 async function depositGoal(id){
-  const g=(CFG.goals||[]).find(x=>idEq(x.id,id));
+  const g=(UserConfig.goals||[]).find(x=>idEq(x.id,id));
   if(!g) return;
   const v=parseFloat(prompt(`Aggiungi risparmio a "${g.name}":`)||0);
   if(!v||v<=0) return;
   const nextCurrent=Math.min(g.target,g.current+v);
   const completed=nextCurrent>=g.target;
-  await DBS.updateGoal(g.id,{current:nextCurrent,completed});
+  await DatabaseService.updateGoal(g.id,{current:nextCurrent,completed});
   if(completed){ launchConfetti(); toast(`🎉 Obiettivo "${g.name}" raggiunto!`,'success'); }
-  saveCfg(); renderGoalsList();
+  saveConfig(); renderGoalsList();
 }
 function renderGoalsList(){
   const el=document.getElementById('goalsList');
   if(!el) return;
-  const goals=(CFG.goals||[]);
+  const goals=(UserConfig.goals||[]);
   if(!goals.length){el.innerHTML='<p class="text-sm text-center py-4" style="color:var(--t2)">Nessun obiettivo. Aggiungine uno!</p>';return;}
   el.innerHTML=goals.map(g=>{
     const tgt=+g.target||0;
@@ -4102,19 +3381,19 @@ function renderNetworthChart(){
   
   // Total initial balance of all accounts
   let initialBalanceAll = 0;
-  if(CFG._accounts) CFG._accounts.forEach(a => initialBalanceAll += +a.initialBalance || 0);
+  if(UserConfig._accounts) UserConfig._accounts.forEach(a => initialBalanceAll += +a.initialBalance || 0);
 
   const netWorthByMonth=months.map(d=>{
     const upTo=new Date(d.getFullYear(),d.getMonth()+1,0);
     let nw = initialBalanceAll;
-    S.txs.forEach(t=>{
+    AppState.transactions.forEach(t=>{
       if(new Date(t.date+'T12:00')<=upTo && t.type!=='transfer'){
         nw+=t.type==='income'?+t.amount:-+t.amount;
       }
     });
     return nw;
   });
-  if(S.charts.networth) S.charts.networth.destroy();
+  if(AppState.charts.networth) AppState.charts.networth.destroy();
   const ctx=canvas.getContext('2d');
   const pos=netWorthByMonth[netWorthByMonth.length-1]>=0;
   
@@ -4131,7 +3410,7 @@ function renderNetworthChart(){
     }
   }
 
-  S.charts.networth=new Chart(ctx,{
+  AppState.charts.networth=new Chart(ctx,{
     type:'line',
     data:{labels,datasets:[{
       label:'Patrimonio Netto',
@@ -4177,16 +3456,16 @@ function renderRecurringBadge(){
 }
 async function injectRecurring(){
   // Auto-add recurring txs if not already added today
-  if(!CFG.recurringTxs||!CFG.recurringTxs.length) return;
+  if(!UserConfig.recurringTxs||!UserConfig.recurringTxs.length) return;
   const today=fmtDate(new Date());
   let added=false;
-  for(const r of CFG.recurringTxs){
-    const alreadyToday=S.txs.some(t=>t.date===today&&t.description===r.description&&+t.amount===+r.amount);
+  for(const r of UserConfig.recurringTxs){
+    const alreadyToday=AppState.transactions.some(t=>t.date===today&&t.description===r.description&&+t.amount===+r.amount);
     if(!alreadyToday&&r.nextDate<=today){
       const payload={...r,id:'local_rec_'+Date.now()+'_'+Math.random().toString(36).slice(2,5),date:today};
       if(!payload.time) payload.time=nowTimeHM();
       delete payload.nextDate;
-      S.txs.push(payload);
+      AppState.transactions.push(payload);
       r.nextDate=fmtDate(new Date(today)); // update
       added=true;
 
@@ -4204,8 +3483,8 @@ async function injectRecurring(){
             payload.id=r1.data?.[0]?.id||payload.id;
             payload._partner_id=r2.data?.[0]?.id||null;
             payload._transfer_ref=ref;
-            DBS.updateAccountBalance(payload.account);
-            if(payload.account_to) DBS.updateAccountBalance(payload.account_to);
+            DatabaseService.updateAccountBalance(payload.account);
+            if(payload.account_to) DatabaseService.updateAccountBalance(payload.account_to);
           } else {
             const res=await dbInsertTxRow(toDbPayload(payload));
             if(res.error) throw res.error;
@@ -4214,20 +3493,20 @@ async function injectRecurring(){
               payload.id=newId;
               const tags=payload.tags||'[]';
               const account_to=payload.account_to||null;
-              if(account_to||tags!=='[]') await DBS.saveTxMeta(newId,{account_to,tags});
-              DBS.updateAccountBalance(payload.account);
+              if(account_to||tags!=='[]') await DatabaseService.saveTxMeta(newId,{account_to,tags});
+              DatabaseService.updateAccountBalance(payload.account);
             }
           }
         }catch(e){ console.warn('recurring.inject DB',e); }
       }
     }
   }
-  if(added){ saveTxs(); saveCfg(); renderAll(); }
+  if(added){ saveTransactions(); saveConfig(); renderAll(); }
 }
 
 // 12. SPENDING STREAKS
 function getStreakDays(){
-  const dates=new Set(S.txs.map(t=>t.date));
+  const dates=new Set(AppState.transactions.map(t=>t.date));
   let streak=0,d=new Date();
   for(let i=0;i<365;i++){
     const k=fmtDate(d);
@@ -4241,8 +3520,8 @@ function getStreakDays(){
 // 13. MONTHLY COMPARISON
 function getMonthlyDiff(){
   const now=new Date();
-  const cur=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
-  const prev=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');const pm=new Date(now.getFullYear(),now.getMonth()-1,1);return d.getMonth()===pm.getMonth()&&d.getFullYear()===pm.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
+  const cur=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
+  const prev=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');const pm=new Date(now.getFullYear(),now.getMonth()-1,1);return d.getMonth()===pm.getMonth()&&d.getFullYear()===pm.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
   if(!prev) return {diff:0,pct:0};
   return {diff:cur-prev,pct:Math.round((cur-prev)/prev*100)};
 }
@@ -4250,7 +3529,7 @@ function getMonthlyDiff(){
 // 14. LARGEST EXPENSES THIS MONTH
 function getTopExpenses(n=5){
   const now=new Date();
-  return S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}).sort((a,b)=>+b.amount- +a.amount).slice(0,n);
+  return AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}).sort((a,b)=>+b.amount- +a.amount).slice(0,n);
 }
 
 // 15. NET WORTH HISTORY
@@ -4258,11 +3537,11 @@ function getNetWorthHistory(){
   const months=[];
   const now=new Date();
   // sum of all account initial balances
-  const initSum=(CFG._accounts||[]).reduce((s,a)=>s+(a.initialBalance||0),0);
+  const initSum=(UserConfig._accounts||[]).reduce((s,a)=>s+(a.initialBalance||0),0);
   for(let i=11;i>=0;i--){
     const d=new Date(now.getFullYear(),now.getMonth()-i,1);
     const endOfMonth=new Date(d.getFullYear(),d.getMonth()+1,0);
-    const upToDate=S.txs.filter(t=>new Date(t.date+'T12:00')<=endOfMonth);
+    const upToDate=AppState.transactions.filter(t=>new Date(t.date+'T12:00')<=endOfMonth);
     let net=initSum;
     // accumulate all non-transfer transactions
     upToDate.filter(t=>t.type!=='transfer').forEach(t=>{ net+=t.type==='income'?+t.amount:-+t.amount; });
@@ -4275,25 +3554,25 @@ function getNetWorthHistory(){
 function enablePin(){
   const p=prompt('Scegli un PIN a 4 cifre:');
   if(!p||!/^\d{4}$/.test(p)){toast('PIN deve essere 4 cifre','error');return;}
-  CFG.pin=p; CFG.pinEnabled=true; saveCfg();
+  UserConfig.pin=p; UserConfig.pinEnabled=true; saveConfig();
   toast('PIN impostato ✓','success');
 }
-function disablePin(){ CFG.pin=''; CFG.pinEnabled=false; saveCfg(); toast('PIN rimosso','warn'); }
+function disablePin(){ UserConfig.pin=''; UserConfig.pinEnabled=false; saveConfig(); toast('PIN rimosso','warn'); }
 function pinKey(k){
-  if(k==='C'){S.pinBuffer='';updatePinDots();return;}
-  if(k==='⌫'){S.pinBuffer=S.pinBuffer.slice(0,-1);updatePinDots();return;}
-  if(S.pinBuffer.length>=4) return;
-  S.pinBuffer+=k;
+  if(k==='C'){AppState.pinBuffer='';updatePinDots();return;}
+  if(k==='⌫'){AppState.pinBuffer=AppState.pinBuffer.slice(0,-1);updatePinDots();return;}
+  if(AppState.pinBuffer.length>=4) return;
+  AppState.pinBuffer+=k;
   updatePinDots();
-  if(S.pinBuffer.length===4){
-    if(S.pinBuffer===CFG.pin) unlockApp();
-    else{ toast('PIN errato','error'); setTimeout(()=>{S.pinBuffer='';updatePinDots();},600); }
+  if(AppState.pinBuffer.length===4){
+    if(AppState.pinBuffer===UserConfig.pin) unlockApp();
+    else{ toast('PIN errato','error'); setTimeout(()=>{AppState.pinBuffer='';updatePinDots();},600); }
   }
 }
 function updatePinDots(){
   ['pinD1','pinD2','pinD3','pinD4'].forEach((id,i)=>{
     const d=document.getElementById(id);
-    if(d) d.style.background=i<S.pinBuffer.length?'var(--br)':'var(--bg2)';
+    if(d) d.style.background=i<AppState.pinBuffer.length?'var(--br)':'var(--bg2)';
   });
 }
 function togglePinSetting(v){
@@ -4301,9 +3580,9 @@ function togglePinSetting(v){
   else { disablePin(); }
   // sync toggle state
   const tog=document.getElementById('pinToggle');
-  if(tog) tog.checked=CFG.pinEnabled;
+  if(tog) tog.checked=UserConfig.pinEnabled;
 }
-function unlockApp(){ document.getElementById('pinScreen').classList.add('hidden'); S.pinBuffer=''; }
+function unlockApp(){ document.getElementById('pinScreen').classList.add('hidden'); AppState.pinBuffer=''; }
 
 // 17. FILTER BY TAG
 function filterByTag(tag){
@@ -4316,15 +3595,15 @@ function filterByTag(tag){
 function deleteFiltered(){
   if(!confirm('Eliminare tutti i movimenti filtrati?')) return;
   const q=(document.getElementById('sQ')?.value||'').toLowerCase();
-  S.txs=S.txs.filter(t=>!((t.description||'').toLowerCase().includes(q)||(CATS[t.category_id]?.l||'').toLowerCase().includes(q)));
-  saveTxs(); renderAll(); toast('Movimenti eliminati','warn');
+  AppState.transactions=AppState.transactions.filter(t=>!((t.description||'').toLowerCase().includes(q)||(Categories[t.category_id]?.l||'').toLowerCase().includes(q)));
+  saveTransactions(); renderAll(); toast('Movimenti eliminati','warn');
 }
 
 // 19. MONTH SELECTOR
 function jumpToMonth(offset){
-  S.viewDate=new Date(S.viewDate.getFullYear(),S.viewDate.getMonth()+offset,1);
+  AppState.viewDate=new Date(AppState.viewDate.getFullYear(),AppState.viewDate.getMonth()+offset,1);
   updateDash();
-  setEl('navMonth',S.viewDate.toLocaleDateString('it-IT',{month:'long',year:'numeric'}));
+  setEl('navMonth',AppState.viewDate.toLocaleDateString('it-IT',{month:'long',year:'numeric'}));
 }
 
 // 20. CSV IMPORT (full)
@@ -4386,7 +3665,7 @@ function buildPreview(){
   const amtCol=document.getElementById('mapAmt')?.value;
   const typeCol=document.getElementById('mapType')?.value;
   const descCol=document.getElementById('mapDesc')?.value;
-  const defAcc=document.getElementById('mapAccDef')?.value||CFG.wallets[0];
+  const defAcc=document.getElementById('mapAccDef')?.value||getDefaultAccountName();
   const defType=document.getElementById('mapTypeDef')?.value||'expense';
   const colIdx=name=>IMP.headers.indexOf(name);
   const get=(row,col)=>col&&colIdx(col)>=0?row[colIdx(col)]||'':'';
@@ -4416,7 +3695,7 @@ function buildPreview(){
     let cat='other';
     const dl=desc.toLowerCase();
     for(const [k,c] of Object.entries(CATS)){if(c.kw.some(kw=>dl.includes(kw))){cat=k;break;}}
-    const isDup=S.txs.some(x=>x.date===date&&Math.abs(+x.amount-finalAmt)<.01&&x.type===type);
+    const isDup=AppState.transactions.some(x=>x.date===date&&Math.abs(+x.amount-finalAmt)<.01&&x.type===type);
     const errors=[];
     if(!isValidDate) errors.push('data');
     if(!isValidAmt) errors.push('importo');
@@ -4432,7 +3711,7 @@ function parseJSON(raw){
     IMP.rows=[];IMP.headers=[];
     document.getElementById('colMap')?.classList.add('hidden');
     const parsed=txs.map(t=>{
-      const isDup=S.txs.some(x=>x.date===t.date&&Math.abs(+x.amount- +t.amount)<.01&&x.type===t.type);
+      const isDup=AppState.transactions.some(x=>x.date===t.date&&Math.abs(+x.amount- +t.amount)<.01&&x.type===t.type);
       return {...t,errors:[],isDup,_valid:true};
     });
     renderPreview(parsed);
@@ -4456,7 +3735,7 @@ function renderPreview(parsed){
       <td>${r.time||''}</td>
       <td>${r.type==='expense'?'↑':r.type==='income'?'↓':'⇄'}</td>
       <td class="${r.type==='expense'?'ter':r.type==='income'?'tok':''}" style="font-variant-numeric:tabular-nums">${fmt(r.amount)}</td>
-      <td>${CATS[r.category_id]?.l||r.category_id}</td>
+      <td>${Categories[r.category_id]?.l||r.category_id}</td>
       <td>${r.account||''}</td>
       <td style="max-width:160px;overflow:hidden;text-overflow:ellipsis">${r.description||'—'}</td>
       <td class="${cls}">${!r._valid?'✗':r.isDup?'⚠':'✓'}</td>
@@ -4495,28 +3774,28 @@ async function confirmImport(){
     rest.id='local_imp_'+Date.now()+'_'+Math.random().toString(36).slice(2,5);
     return rest;
   });
-  clean.forEach(r=>S.txs.push(r));
-  saveTxs();
-  if(IMP._restoreCfg){ CFG=Object.assign(CFG,IMP._restoreCfg); saveCfg(); }
+  clean.forEach(r=>AppState.transactions.push(r));
+  saveTransactions();
+  if(IMP._restoreCfg){ Object.assign(UserConfig, IMP._restoreCfg); saveConfig(); }
   toast(`✅ Importati ${clean.length} movimenti!`,'success');
   unlockAch('importer');
   closeAll(); resetImport(); renderAll(); checkAch();
   // If online, immediately migrate imported data (and any other local-only data) to Supabase
   if(!OFFLINE&&db){
-    setTimeout(()=>{ try{ DBS.migrateAll(); }catch(e){} },300);
+    setTimeout(()=>{ try{ DatabaseService.migrateAll(); }catch(e){} },300);
   }
 }
 
-// 21. CATEGORY RENAME (CFG extension — UI placeholder)
+// 21. CATEGORY RENAME (config extension — UI placeholder)
 function renameCat(key, newLabel){
-  if(CATS[key]) CATS[key].l=newLabel;
+  if(Categories[key]) Categories[key].l=newLabel;
   renderAll();
 }
 
 // 22. PERCENTAGE OF INCOME SPENT
-function getPctIncomeSpent(){
+function getPctotalIncomecomeSpent(){
   const now=new Date();
-  const mTxs=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
+  const mTxs=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
   const inc=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
   const exp=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
   return inc>0 ? Math.round(exp/inc*100) : 0;
@@ -4524,7 +3803,7 @@ function getPctIncomeSpent(){
 
 // 23. DAYS UNTIL NEXT SALARY (based on patterns)
 function getDaysUntilSalary(){
-  const salaryTxs=S.txs.filter(t=>t.type==='income'&&(t.category_id==='salary'||((t.description||'').toLowerCase().includes('stipendio')))).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const salaryTxs=AppState.transactions.filter(t=>t.type==='income'&&(t.category_id==='salary'||((t.description||'').toLowerCase().includes('stipendio')))).sort((a,b)=>new Date(b.date)-new Date(a.date));
   if(!salaryTxs.length) return null;
   const lastDate=new Date(salaryTxs[0].date+'T12:00');
   const nextDate=new Date(lastDate);
@@ -4536,14 +3815,14 @@ function getDaysUntilSalary(){
 // 24. AVERAGE DAILY SPEND (rolling 30d)
 function getAvgDaily30(){
   const cutoff=new Date(); cutoff.setDate(cutoff.getDate()-30);
-  const exp=S.txs.filter(t=>new Date(t.date+'T12:00')>=cutoff&&t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
+  const exp=AppState.transactions.filter(t=>new Date(t.date+'T12:00')>=cutoff&&t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
   return Math.round(exp/30*100)/100;
 }
 
 // 25. TAG STATS
 function getTagStats(){
   const stats={};
-  S.txs.forEach(t=>{
+  AppState.transactions.forEach(t=>{
     try{(typeof t.tags==='string'?JSON.parse(t.tags):t.tags||[]).forEach(tag=>{stats[tag]=(stats[tag]||0)+ +t.amount;});}catch(e){}
   });
   return stats;
@@ -4551,7 +3830,7 @@ function getTagStats(){
 
 // 26. COPY TX AMOUNT TO CLIPBOARD
 function copyAmount(id){
-  const t=S.txs.find(x=>x.id===id);
+  const t=AppState.transactions.find(x=>x.id===id);
   if(!t) return;
   navigator.clipboard?.writeText(t.amount.toString()).then(()=>toast('Importo copiato ✓','success')).catch(()=>toast('Copia non supportata','warn'));
 }
@@ -4559,10 +3838,10 @@ function copyAmount(id){
 // 27. SHARE SUMMARY
 function shareSummary(){
   const now=new Date();
-  const mTxs=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
-  const tIn=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
-  const tOut=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
-  const msg=`📊 Riepilogo ${now.toLocaleDateString('it-IT',{month:'long',year:'numeric'})}\n💚 Entrate: ${fmt(tIn)}\n❤️ Uscite: ${fmt(tOut)}\n💰 Netto: ${fmt(tIn-tOut)}\n\nGenerato con Money Pro X`;
+  const mTxs=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
+  const totalIncome=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
+  const totalExpense=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
+  const msg=`📊 Riepilogo ${now.toLocaleDateString('it-IT',{month:'long',year:'numeric'})}\n💚 Entrate: ${fmt(totalIncome)}\n❤️ Uscite: ${fmt(totalExpense)}\n💰 Netto: ${fmt(totalIncome-totalExpense)}\n\nGenerato con Money Pro X`;
   if(navigator.share){ navigator.share({title:'Riepilogo Finanziario',text:msg}).catch(()=>{}); }
   else{ navigator.clipboard?.writeText(msg); toast('Riepilogo copiato negli appunti ✓','success'); }
 }
@@ -4572,7 +3851,7 @@ function showSuggestions(){
   const q=(document.getElementById('sQ')?.value||'').toLowerCase();
   if(q.length<2) return;
   const seen=new Set();
-  S.txs.forEach(t=>{ if((t.description||'').toLowerCase().includes(q)&&t.description) seen.add(t.description); });
+  AppState.transactions.forEach(t=>{ if((t.description||'').toLowerCase().includes(q)&&t.description) seen.add(t.description); });
   // just trigger renderList for now
   renderList();
 }
@@ -4595,16 +3874,16 @@ function scrollToToday(){
 
 // 31. MARK AS REVIEWED
 function markReviewed(id){
-  const t=S.txs.find(x=>x.id===id);
+  const t=AppState.transactions.find(x=>x.id===id);
   if(!t) return;
   t._reviewed=true;
-  saveTxs();
+  saveTransactions();
   toast('Marcato come revisionato ✓','success');
 }
 
 // 32. RENAME WALLET (quick)
 async function quickRenameWallet(i){
-  const acc=CFG._accounts?.[i]; if(!acc) return;
+  const acc=UserConfig._accounts?.[i]; if(!acc) return;
   const name=prompt('Nuovo nome conto:', acc.name);
   if(name&&name.trim()) await renameWallet(acc.id,name.trim(),acc.name);
 }
@@ -4612,25 +3891,25 @@ async function quickRenameWallet(i){
 // 33. CATEGORY TOTAL (any period)
 function getCatTotal(catKey, months=1){
   const cutoff=new Date(); cutoff.setMonth(cutoff.getMonth()-months);
-  return S.txs.filter(t=>t.category_id===catKey&&t.type==='expense'&&new Date(t.date+'T12:00')>=cutoff).reduce((s,t)=>s+ +t.amount,0);
+  return AppState.transactions.filter(t=>t.category_id===catKey&&t.type==='expense'&&new Date(t.date+'T12:00')>=cutoff).reduce((s,t)=>s+ +t.amount,0);
 }
 
 // 34. EXPORT REPORT (month)
 function exportCurrentMonthPDF(){
-  const month=S.viewDate.toLocaleDateString('it-IT',{month:'long',year:'numeric'});
-  const mTxs=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===S.viewDate.getMonth()&&d.getFullYear()===S.viewDate.getFullYear();}).sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const month=AppState.viewDate.toLocaleDateString('it-IT',{month:'long',year:'numeric'});
+  const mTxs=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===AppState.viewDate.getMonth()&&d.getFullYear()===AppState.viewDate.getFullYear();}).sort((a,b)=>new Date(b.date)-new Date(a.date));
   let txt=`MONEY PRO X — Report ${month}\n${'─'.repeat(48)}\n\n`;
-  mTxs.forEach(t=>{const c=CATS[t.category_id]||CATS.other;txt+=`${t.date}  ${t.type==='expense'?'-':'+'}${String(fmt(t.amount)).padEnd(12)}  ${c.l.padEnd(18)}  ${t.description||''}\n`;});
-  const tIn=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
-  const tOut=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
-  txt+=`\n${'─'.repeat(48)}\nEntrate:  ${fmt(tIn)}\nUscite:   ${fmt(tOut)}\nNetto:    ${fmt(tIn-tOut)}\nRisparmio: ${tIn>0?Math.round((1-tOut/tIn)*100):0}%\n`;
+  mTxs.forEach(t=>{const c=Categories[t.category_id]||Categories.other;txt+=`${t.date}  ${t.type==='expense'?'-':'+'}${String(fmt(t.amount)).padEnd(12)}  ${c.l.padEnd(18)}  ${t.description||''}\n`;});
+  const totalIncome=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
+  const totalExpense=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
+  txt+=`\n${'─'.repeat(48)}\nEntrate:  ${fmt(totalIncome)}\nUscite:   ${fmt(totalExpense)}\nNetto:    ${fmt(totalIncome-totalExpense)}\nRisparmio: ${totalIncome>0?Math.round((1-totalExpense/totalIncome)*100):0}%\n`;
   download(new Blob([txt],{type:'text/plain;charset=utf-8;'}),`Report_${month.replace(/\s/g,'_')}.txt`);
   toast('Report esportato ✓','success');
 }
 
 // 35. AUTO-BACKUP REMINDER
 function checkAutoBackup(){
-  const last=CFG.lastBackup||0;
+  const last=UserConfig.lastBackup||0;
   const days=Math.floor((Date.now()-last)/(1000*60*60*24));
   if(days>7) toast(`⚠️ Ultimo backup ${days} giorni fa — esporta un backup!`,'warn');
 }
@@ -4639,10 +3918,10 @@ function checkAutoBackup(){
 function getProjectedBalance(){
   const avg30=getAvgDaily30();
   const now=new Date();
-  const mTxs=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
-  const tIn=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
-  const tOut=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
-  const currentNet=tIn-tOut;
+  const mTxs=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
+  const totalIncome=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
+  const totalExpense=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
+  const currentNet=totalIncome-totalExpense;
   return currentNet-(avg30*30);
 }
 
@@ -4660,7 +3939,7 @@ function printView(){
 function scheduleTheme(){
   const h=new Date().getHours();
   const shouldBeDark=h>=21||h<7;
-  if(CFG.theme==='system'){
+  if(UserConfig.theme==='system'){
     document.body.classList.toggle('dark',shouldBeDark);
   }
 }
@@ -4668,7 +3947,7 @@ function scheduleTheme(){
 // 40. DUPLICATE DETECTION REPORT
 function getDuplicateCandidates(){
   const seen={};const dups=[];
-  S.txs.forEach(t=>{
+  AppState.transactions.forEach(t=>{
     const k=`${t.date}_${t.amount}_${t.type}`;
     if(seen[k]) dups.push({existing:seen[k],candidate:t});
     else seen[k]=t;
@@ -4679,14 +3958,14 @@ function getDuplicateCandidates(){
 // 41. TRANSACTION COUNT BY CATEGORY
 function getCatCounts(){
   const counts={};
-  S.txs.filter(t=>t.type!=='transfer').forEach(t=>{counts[t.category_id]=(counts[t.category_id]||0)+1;});
+  AppState.transactions.filter(t=>t.type!=='transfer').forEach(t=>{counts[t.category_id]=(counts[t.category_id]||0)+1;});
   return Object.entries(counts).sort((a,b)=>b[1]-a[1]);
 }
 
 // 42. FIRST/LAST TX DATE
 function getDateRange(){
-  if(!S.txs.length) return null;
-  const dates=S.txs.map(t=>t.date).sort();
+  if(!AppState.transactions.length) return null;
+  const dates=AppState.transactions.map(t=>t.date).sort();
   return {first:dates[0], last:dates[dates.length-1]};
 }
 
@@ -4694,8 +3973,8 @@ function getDateRange(){
 function checkBudgetAlerts(){
   const now=new Date();
   const alerts=[];
-  Object.entries(CFG.budgets||{}).forEach(([cat,lim])=>{
-    const spent=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return t.category_id===cat&&t.type==='expense'&&d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}).reduce((s,t)=>s+ +t.amount,0);
+  Object.entries(UserConfig.budgets||{}).forEach(([cat,lim])=>{
+    const spent=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return t.category_id===cat&&t.type==='expense'&&d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();}).reduce((s,t)=>s+ +t.amount,0);
     const pct=spent/lim;
     if(pct>=1) alerts.push({cat,spent,lim,pct,level:'over'});
     else if(pct>=.8) alerts.push({cat,spent,lim,pct,level:'warn'});
@@ -4704,10 +3983,10 @@ function checkBudgetAlerts(){
 }
 
 // 44. INCOME REGULARITY SCORE
-function getIncomeRegularity(){
+function getotalIncomecomeRegularity(){
   const months12=Array.from({length:12},(_,i)=>{
     const d=new Date(); d.setMonth(d.getMonth()-11+i);
-    return S.txs.filter(t=>{const dd=new Date(t.date+'T12:00');return dd.getMonth()===d.getMonth()&&dd.getFullYear()===d.getFullYear()&&t.type==='income';}).reduce((s,t)=>s+ +t.amount,0);
+    return AppState.transactions.filter(t=>{const dd=new Date(t.date+'T12:00');return dd.getMonth()===d.getMonth()&&dd.getFullYear()===d.getFullYear()&&t.type==='income';}).reduce((s,t)=>s+ +t.amount,0);
   });
   const withIncome=months12.filter(v=>v>0).length;
   return Math.round(withIncome/12*100);
@@ -4715,35 +3994,35 @@ function getIncomeRegularity(){
 
 // 45. ESTIMATED ANNUAL SAVINGS
 function getEstimatedAnnualSavings(){
-  const sr=srFor(S.txs,new Date());
+  const savingsRate=savingsRateFor(AppState.transactions,new Date());
   const now=new Date();
-  const tIn=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='income';}).reduce((s,t)=>s+ +t.amount,0);
-  return tIn*(sr/100)*12;
+  const totalIncome=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='income';}).reduce((s,t)=>s+ +t.amount,0);
+  return totalIncome*(savingsRate/100)*12;
 }
 
 // 46. SPENDING VELOCITY (is this month faster than last?)
 function getSpendingVelocity(){
   const now=new Date();
   const dom=now.getDate();
-  const curSpend=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
+  const curSpend=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}).reduce((s,t)=>s+ +t.amount,0);
   const prevMonth=new Date(now.getFullYear(),now.getMonth()-1,1);
   const prevDim=new Date(now.getFullYear(),now.getMonth(),0).getDate();
-  const prevSpend=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===prevMonth.getMonth()&&d.getFullYear()===prevMonth.getFullYear()&&t.type==='expense'&&d.getDate()<=dom;}).reduce((s,t)=>s+ +t.amount,0);
+  const prevSpend=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===prevMonth.getMonth()&&d.getFullYear()===prevMonth.getFullYear()&&t.type==='expense'&&d.getDate()<=dom;}).reduce((s,t)=>s+ +t.amount,0);
   if(!prevSpend) return 0;
   return Math.round((curSpend-prevSpend)/prevSpend*100);
 }
 
 // 47. CATEGORY BUDGET CREATION SHORTCUT
 function quickBudget(cat, amt){
-  CFG.budgets[cat]=amt;
-  saveCfg();
-  renderBudgetMini(S.txs.filter(t=>{const d=new Date(t.date+'T12:00');const now=new Date();return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}));
-  toast(`Budget ${CATS[cat]?.l} impostato a ${fmt(amt)} ✓`,'success');
+  UserConfig.budgets[cat]=amt;
+  saveConfig();
+  renderBudgetMini(AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');const now=new Date();return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type==='expense';}));
+  toast(`Budget ${Categories[cat]?.l} impostato a ${fmt(amt)} ✓`,'success');
 }
 
 // 48. UPCOMING BILL DETECTOR
 function getUpcomingBills(){
-  const recurring=S.txs.filter(t=>{try{return (typeof t.tags==='string'?JSON.parse(t.tags):[]).includes('ricorrente')&&t.type==='expense';}catch(e){return false;}});
+  const recurring=AppState.transactions.filter(t=>{try{return (typeof t.tags==='string'?JSON.parse(t.tags):[]).includes('ricorrente')&&t.type==='expense';}catch(e){return false;}});
   const byDesc={};
   recurring.forEach(t=>{const k=t.description||t.category_id;if(!byDesc[k]||new Date(t.date)>new Date(byDesc[k].date)) byDesc[k]=t;});
   const upcoming=[];
@@ -4759,10 +4038,13 @@ function getUpcomingBills(){
 // 49. MULTI-CURRENCY ACCOUNT TOTALS (show in base currency)
 function getWalletTotalsConverted(){
   const totals={};
-  CFG.wallets.forEach(w=>{
+  const wallets=(UserConfig._accounts||[]).map(a=>a?.name).filter(Boolean);
+  wallets.forEach(w=>{
     let bal=0;
-    S.txs.forEach(t=>{
-      const a=+t.amount, acc=t.account||CFG.wallets[0];
+    AppState.transactions.forEach(t=>{
+      const a=+t.amount||0;
+      const acc=String(t.account||'').trim();
+      if(!acc) return;
       if(t.type==='transfer'){
         if(acc===w) bal-=a;
         if(t.account_to===w) bal+=a;
@@ -4796,11 +4078,11 @@ function applySuggestedCat(){
 function openInsM(){
   haptic();
   const now=new Date();
-  const mTxs=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
-  const tIn=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
-  const tOut=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
-  const sr=srFor(S.txs,now);
-  renderInsights(mTxs,tIn,tOut,sr);
+  const mTxs=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear()&&t.type!=='transfer';});
+  const totalIncome=mTxs.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0);
+  const totalExpense=mTxs.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0);
+  const savingsRate=savingsRateFor(AppState.transactions,now);
+  renderInsights(mTxs,totalIncome,totalExpense,savingsRate);
   openModal('insM');
 }
 
@@ -4808,7 +4090,7 @@ function openInsM(){
    FILTER TX TYPE (tab toggle)
 ============================================================ */
 function setTxFilter(type, el){
-  S.txFilter=type;
+  AppState.txFilter=type;
   document.querySelectorAll('.ftBtn').forEach(b=>b.classList.remove('on'));
   if(el) el.classList.add('on');
   renderList();
@@ -4918,7 +4200,7 @@ function refreshSbStatus(){
 function getProjectedCashFlow(){
   const today=new Date();
   const cutoff=new Date(today); cutoff.setDate(cutoff.getDate()-60);
-  const recent=S.txs.filter(t=>new Date(t.date+'T12:00')>=cutoff&&t.type!=='transfer');
+  const recent=AppState.transactions.filter(t=>new Date(t.date+'T12:00')>=cutoff&&t.type!=='transfer');
 
   // Trova pattern ricorrenti: stessa (descrizione, amount, type)
   const patterns={};
@@ -4932,12 +4214,12 @@ function getProjectedCashFlow(){
   const recurring=Object.values(patterns).filter(p=>p.count>=2);
 
   // Calcola saldo attuale (patrimonio netto)
-  const accounts=CFG._accounts?.length?CFG._accounts:(CFG.wallets||[]).map(w=>({name:w,initialBalance:0}));
+  const accounts=UserConfig._accounts||[];
   let currentBalance=accounts.reduce((s,a)=>s+(a.initialBalance||0),0);
-  S.txs.filter(t=>t.type!=='transfer').forEach(t=>{ currentBalance+=t.type==='income'?+t.amount:-+t.amount; });
+  AppState.transactions.filter(t=>t.type!=='transfer').forEach(t=>{ currentBalance+=t.type==='income'?+t.amount:-+t.amount; });
 
   // Proietta 30 giorni basandosi sulla media mensile per tipo
-  const last30=S.txs.filter(t=>{const d=new Date(t.date+'T12:00');return d>=cutoff&&d<=today&&t.type!=='transfer';});
+  const last30=AppState.transactions.filter(t=>{const d=new Date(t.date+'T12:00');return d>=cutoff&&d<=today&&t.type!=='transfer';});
   const avgOut30=last30.filter(t=>t.type==='expense').reduce((s,t)=>s+ +t.amount,0)/2; // media mensile
   const avgIn30 =last30.filter(t=>t.type==='income').reduce((s,t)=>s+ +t.amount,0)/2;
 
@@ -5046,16 +4328,16 @@ function parseReceipt(){
     found.push({desc,amount,date,cat,selected:true});
   });
 
-  S._receiptItems=found;
+  AppState._receiptItems=found;
   const el=document.getElementById('receiptResults');
   if(!found.length){el.innerHTML='<p class="text-sm py-3 text-center" style="color:var(--t2)">Nessun importo trovato — prova a riformattare il testo</p>';return;}
   el.innerHTML=`<p class="text-[10px] font-bold uppercase mb-2" style="color:var(--t2)">${found.length} voci rilevate — deseleziona quelle da escludere</p>`+
   found.map((item,i)=>`
     <div class="flex items-center gap-2 py-2 border-b last:border-0" style="border-color:var(--bo)">
-      <input type="checkbox" checked onchange="S._receiptItems[${i}].selected=this.checked" class="w-4 h-4 flex-shrink-0" style="accent-color:var(--br)">
+      <input type="checkbox" checked onchange="AppState._receiptItems[${i}].selected=this.checked" class="w-4 h-4 flex-shrink-0" style="accent-color:var(--br)">
       <div class="flex-1 min-w-0">
         <p class="text-xs font-bold truncate">${item.desc}</p>
-        <p class="text-[9px]" style="color:var(--t2)">${item.date} · ${CATS[item.cat]?.l||'Altro'}</p>
+        <p class="text-[9px]" style="color:var(--t2)">${item.date} · ${Categories[item.cat]?.l||'Altro'}</p>
       </div>
       <p class="text-sm font-black flex-shrink-0" style="color:var(--bd)">${fmt(item.amount)}</p>
     </div>`).join('');
@@ -5070,9 +4352,11 @@ function autoDetectCat(desc){
 }
 
 async function importReceiptItems(){
-  const items=(S._receiptItems||[]).filter(x=>x.selected);
+  if(!ensureAccountsOrOnboard()) return;
+  const items=(AppState._receiptItems||[]).filter(x=>x.selected);
   if(!items.length){toast('Seleziona almeno una voce','warn');return;}
-  const account=CFG._accounts?.[0]?.name||'Principale';
+  const account=getDefaultAccountName();
+  if(!account){ toast('Seleziona un conto','warn'); return; }
   const today=fmtDate(new Date());
   const time=nowTimeHM();
   for(const item of items){
@@ -5084,12 +4368,12 @@ async function importReceiptItems(){
         const {data}=await dbInsertTxRow(toDbPayload(payload));
         if(data?.[0]) payload.id=data[0].id;
         if(!payload.id) payload.id='local_'+Date.now()+'_r'+Math.random().toString(36).slice(2,5);
-        S.txs.push(payload);
+        AppState.transactions.push(payload);
       }catch(e){ saveTxLocal(payload); }
     }
   }
-  try{ DBS.updateAccountBalance(account); }catch(e){}
-  saveTxs(); closeAll(); renderAll(); checkAch();
+  try{ DatabaseService.updateAccountBalance(account); }catch(e){}
+  saveTransactions(); closeAll(); renderAll(); checkAch();
   toast(`✅ Importate ${items.length} voci dallo scontrino`,'success');
 }
 
@@ -5105,7 +4389,7 @@ function openMoodTracker(){
   // Raggruppa spese per mood
   const moodStats={};
   MOODS.forEach(m=>{moodStats[m]={count:0,total:0};});
-  S.txs.filter(t=>t.type==='expense').forEach(t=>{
+  AppState.transactions.filter(t=>t.type==='expense').forEach(t=>{
     try{
       const tags=typeof t.tags==='string'?JSON.parse(t.tags):t.tags||[];
       const mood=tags.find(tag=>MOODS.includes(tag));
@@ -5143,21 +4427,21 @@ function openMoodTracker(){
 ────────────────────────────────────────────────────────── */
 function openSavingsChallenge(){
   haptic();
-  if(!CFG._challenges) CFG._challenges={week52:0,roundup:0,noSpendStreak:0,noSpendGoal:7,lastNoSpendCheck:null};
-  const ch=CFG._challenges;
+  if(!UserConfig._challenges) UserConfig._challenges={week52:0,roundup:0,noSpendStreak:0,noSpendGoal:7,lastNoSpendCheck:null};
+  const ch=UserConfig._challenges;
 
   // Calcola no-spend streak (giorni senza spese)
   const today=fmtDate(new Date());
   let streak=0; let d=new Date();
   for(let i=0;i<60;i++){
     const k=fmtDate(d);
-    const hasSpend=S.txs.some(t=>t.date===k&&t.type==='expense');
+    const hasSpend=AppState.transactions.some(t=>t.date===k&&t.type==='expense');
     if(!hasSpend) streak++; else break;
     d.setDate(d.getDate()-1);
   }
 
   // Calcola arrotondamento (risparmia il resto di ogni spesa al €1 prossimo)
-  const roundupTotal=S.txs.filter(t=>t.type==='expense').reduce((s,t)=>{
+  const roundupTotal=AppState.transactions.filter(t=>t.type==='expense').reduce((s,t)=>{
     const cents=Math.round((1-((+t.amount)%1))*100)/100;
     return cents<1?s+cents:s;
   },0);
@@ -5209,18 +4493,18 @@ function openSavingsChallenge(){
 }
 
 function addToWeek52Challenge(){
-  if(!CFG._challenges) CFG._challenges={week52:0};
+  if(!UserConfig._challenges) UserConfig._challenges={week52:0};
   const week=Math.ceil(((new Date()-new Date(new Date().getFullYear(),0,1))/86400000)/7);
-  CFG._challenges.week52=Math.min(1378,(CFG._challenges.week52||0)+week);
-  saveCfg();
+  UserConfig._challenges.week52=Math.min(1378,(UserConfig._challenges.week52||0)+week);
+  saveConfig();
   openSavingsChallenge();
   toast(`Settimana ${week} aggiunta! (${fmt(week)} risparmiati)`,'success');
 }
 
 function changeNoSpendGoal(delta){
-  if(!CFG._challenges) CFG._challenges={};
-  CFG._challenges.noSpendGoal=Math.max(1,Math.min(30,(CFG._challenges.noSpendGoal||7)+delta));
-  saveCfg(); openSavingsChallenge();
+  if(!UserConfig._challenges) UserConfig._challenges={};
+  UserConfig._challenges.noSpendGoal=Math.max(1,Math.min(30,(UserConfig._challenges.noSpendGoal||7)+delta));
+  saveConfig(); openSavingsChallenge();
 }
 
 /* ── 5. SUBSCRIPTIONS OVERLAP DETECTOR ──────────────────────
@@ -5230,7 +4514,7 @@ function changeNoSpendGoal(delta){
 function detectHiddenSubscriptions(){
   haptic();
   const cutoff=new Date(); cutoff.setDate(cutoff.getDate()-90);
-  const recent=S.txs.filter(t=>new Date(t.date+'T12:00')>=cutoff&&t.type==='expense');
+  const recent=AppState.transactions.filter(t=>new Date(t.date+'T12:00')>=cutoff&&t.type==='expense');
 
   // Raggruppa per (description, amount) e conta occorrenze
   const groups={};
@@ -5257,8 +4541,8 @@ function detectHiddenSubscriptions(){
     return {...g,avgInterval:Math.round(avgInterval),monthly:Math.round(monthly*100)/100};
   }).sort((a,b)=>b.monthly-a.monthly);
 
-  // Controlla quali non sono già in CFG.subscriptions
-  const knownNames=(CFG.subscriptions||[]).map(s=>s.name.toLowerCase());
+  // Controlla quali non sono già in UserConfig.subscriptions
+  const knownNames=(UserConfig.subscriptions||[]).map(s=>s.name.toLowerCase());
   const unknown=detected.filter(g=>!knownNames.some(n=>g.desc.toLowerCase().includes(n.slice(0,5))));
   const known=detected.filter(g=>knownNames.some(n=>g.desc.toLowerCase().includes(n.slice(0,5))));
 
@@ -5271,7 +4555,7 @@ function detectHiddenSubscriptions(){
     ${unknown.map(g=>`
       <div class="flex items-center gap-3 py-3 border-b" style="border-color:var(--bo)">
         <div class="w-9 h-9 rounded-xl flex items-center justify-center flex-shrink-0" style="background:rgba(255,59,92,.1)">
-          <i data-lucide="${CATS[g.cat]?.ic||'refresh-cw'}" class="w-4 h-4" style="color:var(--bd)"></i>
+          <i data-lucide="${Categories[g.cat]?.ic||'refresh-cw'}" class="w-4 h-4" style="color:var(--bd)"></i>
         </div>
         <div class="flex-1 min-w-0">
           <p class="text-xs font-bold truncate">${g.desc}</p>
@@ -5287,27 +4571,27 @@ function detectHiddenSubscriptions(){
     ${known.length?`<p class="text-[10px] font-bold uppercase tracking-wider mt-4 mb-2" style="color:var(--ok)">✅ ${known.length} già tracciati</p>
     ${known.map(g=>`<div class="flex items-center gap-3 py-2"><div class="w-2 h-2 rounded-full flex-shrink-0" style="background:var(--ok)"></div><p class="text-xs flex-1 truncate">${g.desc}</p><p class="text-xs font-bold" style="color:var(--ok)">${fmt(g.amount)}</p></div>`).join('')}`:''}`;
 
-  S._detectedSubs=unknown;
+  AppState._detectedSubs=unknown;
   openModal('subDetectModal');
   lucide.createIcons();
 }
 
 async function addDetectedSubs(){
-  const subs=S._detectedSubs||[];
+  const subs=AppState._detectedSubs||[];
   const today=fmtDate(new Date());
   for(const g of subs){
     const sub={name:g.desc.slice(0,40),amount:g.amount,frequency:'monthly',nextDate:today,active:true};
-    if(!CFG.subscriptions) CFG.subscriptions=[];
-    // Use DBS if available, else local
-    if(typeof DBS!=='undefined'&&DBS.saveSub){
-      await DBS.saveSub(sub);
+    if(!UserConfig.subscriptions) UserConfig.subscriptions=[];
+    // Use DatabaseService if available, else local
+    if(typeof DBS!=='undefined'&&DatabaseService.saveSub){
+      await DatabaseService.saveSub(sub);
     } else {
       sub.id='ls'+Date.now()+'_'+Math.random().toString(36).slice(2,4);
-      CFG.subscriptions.push(sub);
-      localStorage.setItem('mpx_subscriptions',JSON.stringify(CFG.subscriptions));
+      UserConfig.subscriptions.push(sub);
+      localStorage.setItem('mpx_subscriptions',JSON.stringify(UserConfig.subscriptions));
     }
   }
-  saveCfg(); closeAll();
+  saveConfig(); closeAll();
   toast(`${subs.length} abbonamenti aggiunti ✓`,'success');
 }
 

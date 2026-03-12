@@ -124,8 +124,24 @@ input:checked+.tog-sl::after{transform:translateX(20px)}
   .grid.gap-4{gap:0.75rem!important}
   .kpi-card{padding:1rem!important}
 }
+
+/* ── Progress Bars & Budget ── */
+.progress-glow{box-shadow:0 0 12px var(--col);opacity:.8}
+.budget-bar-bg{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.05)}
+.cat-manager-item{transition:all .2s ease}
+.cat-manager-item:active{scale:.98;background:var(--bg2)}
 /* ── Fintech badge ── */
-.ft-badge{width:26px;height:26px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;font-family:'Syne',sans-serif;color:#fff;flex-shrink:0;letter-spacing:-.5px}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+.animate-spin-slow {
+  animation: spin-slow 1.5s linear infinite;
+}
+.loader-spinner {
+  border-right-color: transparent !important;
+  border-bottom-color: transparent !important;
+}
 
 .ptab{padding:.36rem .88rem;border-radius:.6rem;font-size:.78rem;font-weight:700;transition:all .2s;cursor:pointer}
 .ptab.on{background:var(--br);color:#fff}
