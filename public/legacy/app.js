@@ -631,6 +631,12 @@ async function init(){
   if(!hasAccounts()){
     openAccountSetup();
   }
+  // First run: if cloud sync isn't configured yet, guide user to paste SQL + credentials.
+  try{
+    if(OFFLINE && !localStorage.getItem('mpxSbOnboardDone') && hasAccounts()){
+      setTimeout(()=>{ try{ openSbOnboard(); }catch(e){} },600);
+    }
+  }catch(e){}
 
   // 5. Popola select categorie
   ['txCat','fCat'].forEach(id=>{
@@ -782,6 +788,12 @@ async function createFirstAccount(){
     renderWalletSettings();
     renderAll();
     toast('Conto creato ✓','success');
+    // First run: prompt Supabase credentials + SQL schema (optional, but requested).
+    try{
+      if(OFFLINE && !localStorage.getItem('mpxSbOnboardDone')){
+        setTimeout(()=>{ try{ openSbOnboard(); }catch(e){} },250);
+      }
+    }catch(e){}
   }catch(e){
     console.warn('createFirstAccount',e);
     toast('Errore creazione conto','error');
@@ -2072,6 +2084,10 @@ function renderTemporalChart(){
 function makeChart(id,type,data,extraOpts={}){
   const canvas=document.getElementById(id);
   if(!canvas) return;
+  if(typeof Chart==='undefined'){
+    console.warn('Chart.js non disponibile (script non caricato?)');
+    return;
+  }
   if(AppState.charts[id]) try{AppState.charts[id].destroy();}catch(e){}
   const defaults = {
     responsive: true,
@@ -2248,6 +2264,27 @@ function applyColor(hex){
   document.documentElement.style.setProperty('--br',hex);
   const mt=document.getElementById('metaTheme'); if(mt) mt.content=hex;
 }
+function resolveCol(v){
+  // Resolve CSS vars (e.g. "var(--br)") to computed colors (Chart.js can't parse CSS vars reliably).
+  const s=String(v==null?'':v).trim();
+  if(!s) return s;
+  try{
+    if(s.startsWith('var(')){
+      const m=s.match(/var\((--[^,\s)]+)(?:\s*,\s*([^)]+))?\)/);
+      const name=m?.[1];
+      const fallback=(m?.[2]||'').trim();
+      if(name){
+        const val=getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+        return val || fallback || s;
+      }
+    }
+    if(s.startsWith('--')){
+      const val=getComputedStyle(document.documentElement).getPropertyValue(s).trim();
+      return val || s;
+    }
+  }catch(e){}
+  return s;
+}
 function toggleDark(v){ UserConfig.theme=v?'dark':'light'; applyTheme(); saveConfig(); }
 function saveSettings(){
   UserConfig.currency = document.getElementById('currS')?.value||'€';
@@ -2368,11 +2405,89 @@ async function removeWallet(id){
   if(UserConfig._accounts.length<=1){toast('Serve almeno un conto','warn');return;}
   const acc=UserConfig._accounts.find(a=>a.id===id);
   if(!acc) return;
-  const target=UserConfig._accounts.find(a=>a.id!==id)?.name||'';
-  const impacted=AppState.transactions.filter(t=>t.account===acc.name || t.account_to===acc.name).length;
+  const otherAccounts=(UserConfig._accounts||[]).filter(a=>a.id!==id).map(a=>a?.name).filter(Boolean);
+  const fallbackTarget=(otherAccounts.includes(UserConfig.defaultWallet) ? UserConfig.defaultWallet : (otherAccounts[0]||''));
+  const impactedTxs=AppState.transactions.filter(t=>t.account===acc.name || t.account_to===acc.name);
+  const impacted=impactedTxs.length;
+
   if(impacted>0){
-    if(!target){ toast('Impossibile: manca un conto di destinazione','error'); return; }
-    if(!confirm(`Il conto "${acc.name}" è usato in ${impacted} movimenti.\n\nVuoi spostarli su "${target}" e poi eliminarlo?`)) return;
+    const delAll=confirm(
+      `Il conto \"${acc.name}\" è usato in ${impacted} movimenti.\n\n`+
+      `OK = Elimina conto + movimenti\n`+
+      `Annulla = Sposta i movimenti su un altro conto`
+    );
+
+    if(delAll){
+      if(!confirm(`Confermi eliminazione DEFINITIVA di ${impacted} movimenti e del conto \"${acc.name}\"?`)) return;
+
+      // 1) Local: remove transactions + local meta.
+      try{
+        const ids=new Set();
+        impactedTxs.forEach(t=>{
+          ids.add(normId(t.id));
+          if(t?._partner_id) ids.add(normId(t._partner_id)); // legacy giro partner
+        });
+        AppState.transactions=AppState.transactions.filter(t=>!ids.has(normId(t.id)));
+        if(AppState._localMeta){
+          ids.forEach(txid=>{ if(txid) delete AppState._localMeta[txid]; });
+        }
+        saveTransactions();
+      }catch(e){}
+
+      // 2) DB: best-effort delete all txs involving the account (as account OR account_to).
+      if(!OFFLINE && db){
+        try{
+          // Legacy GIRO pairs: if we delete only one side we create orphans, so delete both by ref.
+          const refs=new Set();
+          const {data:legacyRows,error:legacyErr}=await db
+            .from('transactions')
+            .select('description')
+            .eq('account',acc.name)
+            .like('description','[GIRO:%');
+          if(legacyErr) throw legacyErr;
+          (legacyRows||[]).forEach(r=>{
+            const m=String(r?.description||'').match(/^\[GIRO:([^\]]+)\]/);
+            if(m?.[1]) refs.add(m[1]);
+          });
+          for(const ref of refs){
+            await db.from('transactions').delete().like('description',`[GIRO:${ref}]%`);
+          }
+
+          const ids=new Set();
+          const {data:accRows}=await db.from('transactions').select('id').eq('account',acc.name);
+          (accRows||[]).forEach(r=>{ if(r?.id) ids.add(r.id); });
+          const {data:metaRows}=await db.from('transaction_meta').select('tx_id').eq('account_to',acc.name);
+          (metaRows||[]).forEach(r=>{ if(r?.tx_id) ids.add(r.tx_id); });
+          const all=[...ids].filter(Boolean);
+          const chunk=(arr,n)=>{ const out=[]; for(let i=0;i<arr.length;i+=n) out.push(arr.slice(i,i+n)); return out; };
+          for(const part of chunk(all,100)){
+            try{ await db.from('transaction_meta').delete().in('tx_id',part); }catch(e){}
+            await db.from('transactions').delete().in('id',part);
+          }
+          // Cleanup orphan meta (in case schema wasn't created with ON DELETE CASCADE).
+          try{ await db.from('transaction_meta').delete().eq('account_to',acc.name); }catch(e){}
+        }catch(e){ console.warn('accounts.deleteTx',e); }
+      }
+
+      if(UserConfig.defaultWallet===acc.name && fallbackTarget){ UserConfig.defaultWallet=fallbackTarget; saveConfig(); }
+      await DatabaseService.deleteAccount(id);
+      try{ await DatabaseService.updateAllBalances(); }catch(e){}
+      renderWalletSettings(); populateWalletSel(); renderAll();
+      toast('Conto e movimenti eliminati','warn');
+      return;
+    }
+
+    // Move transactions to another account, then delete.
+    if(!otherAccounts.length){ toast('Impossibile: manca un conto di destinazione','error'); return; }
+    let target=fallbackTarget;
+    if(otherAccounts.length>1){
+      const picked=prompt(`Sposta i ${impacted} movimenti su quale conto?\n\nDisponibili:\n- ${otherAccounts.join('\n- ')}`, target);
+      if(picked==null) return;
+      target=String(picked).trim();
+    }
+    if(!target || !otherAccounts.includes(target)){ toast('Conto di destinazione non valido','error'); return; }
+    if(!confirm(`Vuoi spostare ${impacted} movimenti su \"${target}\" e poi eliminare \"${acc.name}\"?`)) return;
+
     try{
       AppState.transactions.forEach(t=>{
         if(t.account===acc.name) t.account=target;
@@ -2383,7 +2498,6 @@ async function removeWallet(id){
       }
       saveTransactions();
     }catch(e){}
-    // Keep DB consistent (best effort).
     if(!OFFLINE && db){
       try{
         await db.from('transactions').update({account:target}).eq('account',acc.name);
@@ -2391,10 +2505,15 @@ async function removeWallet(id){
       }catch(e){ console.warn('accounts.reassign',e); }
     }
     if(UserConfig.defaultWallet===acc.name){ UserConfig.defaultWallet=target; saveConfig(); }
-  } else {
-    if(!confirm(`Elimina il conto "${acc.name}"?`)) return;
-    if(UserConfig.defaultWallet===acc.name){ UserConfig.defaultWallet=target; saveConfig(); }
+    await DatabaseService.deleteAccount(id);
+    renderWalletSettings(); populateWalletSel(); renderAll();
+    toast('Conto eliminato','warn');
+    return;
   }
+
+  // No impacted txs: delete the account only.
+  if(!confirm(`Elimina il conto \"${acc.name}\"?`)) return;
+  if(UserConfig.defaultWallet===acc.name && fallbackTarget){ UserConfig.defaultWallet=fallbackTarget; saveConfig(); }
   await DatabaseService.deleteAccount(id);
   renderWalletSettings(); populateWalletSel(); renderAll();
   toast('Conto eliminato','warn');
@@ -3278,8 +3397,8 @@ function renderDebtsMini(){
   const totalBorrow=debts.filter(d=>d.type==='borrow').reduce((s,d)=>s+d.amount,0);
   const totalLend=debts.filter(d=>d.type==='lend').reduce((s,d)=>s+d.amount,0);
   el.innerHTML=`<div class="flex gap-3">
-    ${totalBorrow>0?`<div class="flex-1 p-2 rounded-xl text-center" style="background:rgba(0,200,150,.1)"><p class="text-[9px] font-bold" style="color:var(--ok)">Mi devono</p><p class="font-black text-sm" style="color:var(--ok)">${fmt(totalBorrow)}</p></div>`:''}
-    ${totalLend>0?`<div class="flex-1 p-2 rounded-xl text-center" style="background:rgba(255,59,92,.1)"><p class="text-[9px] font-bold" style="color:var(--bd)">Devo io</p><p class="font-black text-sm" style="color:var(--bd)">${fmt(totalLend)}</p></div>`:''}
+    ${totalBorrow>0?`<div class="flex-1 p-2 rounded-xl text-center" style="background:rgba(0,200,150,.1)"><p class="text-[9px] font-bold leading-tight" style="color:var(--ok)">Mi devono</p><p class="font-black text-sm leading-tight" style="color:var(--ok);font-variant-numeric:tabular-nums">${fmt(totalBorrow)}</p></div>`:''}
+    ${totalLend>0?`<div class="flex-1 p-2 rounded-xl text-center" style="background:rgba(255,59,92,.1)"><p class="text-[9px] font-bold leading-tight" style="color:var(--bd)">Devo io</p><p class="font-black text-sm leading-tight" style="color:var(--bd);font-variant-numeric:tabular-nums">${fmt(totalLend)}</p></div>`:''}
   </div>`;
 }
 function openDebtsM(){
@@ -3366,9 +3485,9 @@ function renderSubsMini(){
   const subs=(UserConfig.subscriptions||[]).filter(s=>s.active);
   if(!subs.length){el.innerHTML='<p class="text-xs" style="color:var(--t2)">Nessun abbonamento attivo</p>';return;}
   const monthly=subs.reduce((t,s)=>t+subMonthlyAmount(s),0);
-  el.innerHTML=`<div class="flex justify-between items-center">
-    <p class="text-xs" style="color:var(--t2)">${subs.length} abbonamento${subs.length>1?'i':''} attivi</p>
-    <p class="font-black text-sm" style="color:var(--acc)">${fmt(monthly)}/mese</p>
+  el.innerHTML=`<div class="flex justify-between items-baseline gap-3">
+    <p class="text-xs leading-tight" style="color:var(--t2)">${subs.length} abbonamento${subs.length>1?'i':''} attivi</p>
+    <p class="font-black text-sm leading-tight" style="color:var(--acc);font-variant-numeric:tabular-nums">${fmt(monthly)}/mese</p>
   </div>`;
 }
 function openSubsM(){
@@ -4195,6 +4314,84 @@ async function syncNow(){
   if(OFFLINE){toast('Nessuna connessione al server configurata','warn');return;}
   toast('Sincronizzazione...','info');
   await _syncAllFromDB();
+}
+
+function openSbOnboard(){
+  try{
+    const schemaEl=document.getElementById('sbOnSchemaEl');
+    if(schemaEl) schemaEl.textContent = (typeof SQL_SCHEMA !== 'undefined' ? SQL_SCHEMA : '');
+    const urlInp=document.getElementById('sbOnUrlInp');
+    const keyInp=document.getElementById('sbOnKeyInp');
+    if(urlInp) urlInp.value = localStorage.getItem('mpxSbUrl')||'';
+    if(keyInp) keyInp.value = '';
+  }catch(e){}
+  openModal('sbOnboardM');
+}
+function skipSbOnboard(){
+  try{ localStorage.setItem('mpxSbOnboardDone','1'); }catch(e){}
+  closeAll(true);
+  toast('Ok: puoi configurare Supabase più tardi in Impostazioni','info');
+}
+function saveSbCredentialsOnboard(){
+  const url = document.getElementById('sbOnUrlInp')?.value.trim();
+  const key = document.getElementById('sbOnKeyInp')?.value.trim();
+  if(!url||!key){toast('Inserisci URL e chiave Supabase','error');return;}
+  if(!url.startsWith('https://')){toast('URL deve iniziare con https://','error');return;}
+  if(key.startsWith('•')){toast('Inserisci la chiave reale, non i pallini','error');return;}
+  try{
+    localStorage.setItem('mpxSbUrl', url);
+    localStorage.setItem('mpxSbKey', key);
+    localStorage.setItem('mpxSbOnboardDone','1');
+  }catch(e){}
+  toast('✅ Credenziali salvate! Ricarico...','success');
+  setTimeout(()=>location.reload(), 800);
+}
+async function testSbConnectionOnboard(){
+  const url=document.getElementById('sbOnUrlInp')?.value.trim();
+  const key=document.getElementById('sbOnKeyInp')?.value.trim();
+  if(!url||!key||key.startsWith('•')){toast('Inserisci prima URL e chiave validi','warn');return;}
+  if(!url.startsWith('https://')){toast('URL deve iniziare con https://','error');return;}
+  const btn=document.getElementById('sbOnTestBtn');
+  if(btn){btn.textContent='⏳ Test...';btn.disabled=true;}
+  try{
+    const testDb = window.supabase.createClient(url, key);
+    const checks=[
+      ['transactions','id'],
+      ['transaction_meta','tx_id'],
+      ['accounts','id'],
+      ['budgets','id'],
+      ['categories','id'],
+      ['goals','id'],
+      ['debts','id'],
+      ['subscriptions','id'],
+      ['templates','id'],
+      ['notes','id'],
+      ['settings','key'],
+    ];
+    const res=await Promise.allSettled(checks.map(([t,c])=>testDb.from(t).select(c).limit(1)));
+    const ok=[], bad=[];
+    res.forEach((r,i)=>{
+      const table=checks[i][0];
+      if(r.status!=='fulfilled'){ bad.push({table,err:r.reason}); return; }
+      const out=r.value;
+      if(out?.error) bad.push({table,err:out.error});
+      else ok.push(table);
+    });
+
+    if(!ok.length) throw (bad[0]?.err||new Error('Connessione fallita'));
+    if(bad.length){
+      const missing=bad.map(x=>x.table).join(', ');
+      toast(`✅ Connessione OK, ma schema incompleto: ${missing}`,'warn');
+      if(btn){btn.textContent='⚠️ Parziale';btn.style.background='var(--wn)';}
+    } else {
+      toast(`✅ Connessione OK! Schema pronto (${ok.length} tabelle)`,'success');
+      if(btn){btn.textContent='✅ Connesso';btn.style.background='var(--ok)';}
+    }
+  }catch(err){
+    toast(`❌ Errore: ${err.message||err.code||JSON.stringify(err)}`,'error');
+    if(btn){btn.textContent='❌ Fallito';btn.style.background='var(--bd)';}
+  }
+  setTimeout(()=>{if(btn){btn.textContent='Testa Connessione';btn.disabled=false;btn.style.background='';}},3000);
 }
 
 function saveSbCredentials(){
