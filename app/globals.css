@@ -20,7 +20,8 @@
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;user-select:none}
 input,textarea,select,[contenteditable="true"]{user-select:text}
-body{background:var(--bg);color:var(--t);font-family:'DM Sans',sans-serif;overflow-x:hidden;transition:background .35s,color .35s}
+html{width:100%;overflow-x:hidden;overscroll-behavior-x:none}
+body{background:var(--bg);color:var(--t);font-family:'DM Sans',sans-serif;width:100%;overflow-x:hidden;overscroll-behavior-x:none;transition:background .35s,color .35s}
 h1,h2,h3,.syne{font-family:'Syne',sans-serif}
 ::-webkit-scrollbar{width:3px;height:3px}
 ::-webkit-scrollbar-thumb{background:var(--bo);border-radius:99px}
@@ -40,12 +41,14 @@ select.inp{appearance:none}
 /* overlays */
 .ov{background:rgba(0,0,0,.55);backdrop-filter:blur(7px);opacity:0;pointer-events:none;transition:.28s;z-index:50}
 .ov.on{opacity:1;pointer-events:all}
-.sh-up{transform:translateY(105%);transition:transform .48s cubic-bezier(.32,1.2,.2,1);background:var(--card);border-radius:28px 28px 0 0;z-index:60;padding-bottom:env(safe-area-inset-bottom)}
+.sh-up{transform:translateY(105%);transition:transform .48s cubic-bezier(.32,1.2,.2,1);background:var(--card);border-radius:28px 28px 0 0;z-index:60;padding-bottom:env(safe-area-inset-bottom);overflow-x:hidden;overscroll-behavior-x:none}
 .sh-up.on{transform:translateY(0)}
 .truncate{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* pages */
 .page{display:none;opacity:0;transform:translateY(10px);transition:all .38s cubic-bezier(.25,1,.5,1)}
 .page.on{display:block;opacity:1;transform:translateY(0)}
+#scroll{overflow-x:hidden;overscroll-behavior-x:none;-webkit-overflow-scrolling:touch}
+.sh-up .overflow-y-auto{overflow-x:hidden;overscroll-behavior-x:none;-webkit-overflow-scrolling:touch}
 /* animations */
 @keyframes slideUp{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:translateY(0)}}
 @keyframes shimmer{0%{background-position:-800px 0}100%{background-position:800px 0}}
@@ -115,6 +118,8 @@ input:checked+.tog-sl::after{transform:translateX(20px)}
 .acc-pill span{font-size:11px;font-weight:700;color:var(--t)}
 /* ── Mobile fixes ── */
 @media(max-width:430px){
+  /* Prevent iOS Safari "input focus zoom" (font-size < 16px). */
+  .inp{font-size:16px}
   .main-scroll{padding-bottom:calc(72px + max(env(safe-area-inset-bottom),10px))!important}
   .sh-up{border-radius:24px 24px 0 0}
   .wc{min-width:128px}

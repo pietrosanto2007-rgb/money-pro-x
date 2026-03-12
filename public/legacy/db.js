@@ -151,8 +151,9 @@ function toDbPayload(t, overrideType, overrideDesc){
     if(UserConfig?.defaultWallet && names.includes(UserConfig.defaultWallet)) return UserConfig.defaultWallet;
     return names[0]||null;
   })();
+  const type=(overrideType || t.type || 'expense');
   return {
-    type:        overrideType || (t.type==='transfer'?'expense':t.type),
+    type,
     amount:      parseFloat(t.amount)||0,
     date:        t.date,
     time:        normTime(t.time)||null,
@@ -164,41 +165,132 @@ function toDbPayload(t, overrideType, overrideDesc){
 }
 
 function processDbRows(rows){
-  const giroMap={};
-  const normal=[];
-  (rows||[]).forEach(row=>{
-    const m=(row.description||'').match(/^\[GIRO:([^\]]+)\](.*)/);
-    if(m){
-      const ref=m[1]; const desc=m[2].trim();
-      if(!giroMap[ref]) giroMap[ref]={};
-      if(row.type==='expense') giroMap[ref].out={...row,description:desc};
-      else                     giroMap[ref].in={...row,description:desc};
-    } else normal.push(row);
-  });
-  const result=normal.map(r=>{
-    const local=(AppState._localMeta||{})[r.id]||{};
-    return {...r, time:r.time||null, account_to:null, tags:local.tags||'[]'};
-  });
-  Object.entries(giroMap).forEach(([ref,{out,inn}])=>{
-    if(out&&inn){
-      result.push({
-        id:out.id, _partner_id:inn.id,
-        type:'transfer',
-        amount:out.amount,
-        date:out.date,
-        time:out.time||null,
-        category_id:out.category_id||'other',
-        description:out.description||`Giro ${out.account}→${inn.account}`,
-        account:out.account,
-        account_to:inn.account,
-        tags:'[]',
-        _transfer_ref:ref,
-      });
-    } else {
-      const r=out||inn; if(r) result.push({...r,time:r.time||null,account_to:null,tags:'[]'});
+  const meta=(AppState._localMeta||{});
+  const accs=(UserConfig?._accounts||[]).map(a=>String(a?.name||'').trim()).filter(Boolean);
+  const accEq=(a,b)=>String(a||'').trim().toLowerCase()===String(b||'').trim().toLowerCase();
+  const resolveAcc=(name)=>{
+    const n=String(name||'').trim();
+    if(!n) return '';
+    const exact=accs.find(x=>x===n); if(exact) return exact;
+    const ci=accs.find(x=>x.toLowerCase()===n.toLowerCase());
+    return ci || n;
+  };
+  const inferArrow=(desc)=>{
+    const s=String(desc||'').trim();
+    if(!s) return null;
+    const m=s.match(/(.+?)(?:\s*)(?:→|->)(?:\s*)(.+)$/);
+    if(!m) return null;
+    const a=String(m[1]||'').replace(/^giro\s*/i,'').trim();
+    const b=String(m[2]||'').trim();
+    if(!a||!b) return null;
+    return {from:resolveAcc(a), to:resolveAcc(b)};
+  };
+  const attachMeta=(r)=>{
+    const m=meta?.[r.id]||{};
+    return {
+      ...r,
+      time:r.time||null,
+      tags:m.tags||'[]',
+      account_to:m.account_to||null,
+    };
+  };
+
+  // Legacy GIRO pairs stored as 2 rows with "[GIRO:<ref>]" prefix.
+  const pending={}; // ref -> { out?, inn?, idx }
+  const out=[];
+  for(const row of (rows||[])){
+    const rawDesc=row?.description||'';
+    const mm=rawDesc.match(/^\[GIRO:([^\]]+)\]\s*(.*)$/);
+    const isLegacyGiro=!!(mm && (row.type==='expense' || row.type==='income'));
+    if(isLegacyGiro){
+      const ref=mm[1];
+      const cleanDesc=(mm[2]||'').trim();
+      if(!pending[ref]){
+        pending[ref]={out:null,inn:null,idx:out.length};
+        out.push({__giro_placeholder:true,ref});
+      }
+      if(row.type==='expense') pending[ref].out={...row,description:cleanDesc};
+      else                    pending[ref].inn={...row,description:cleanDesc};
+
+      const p=pending[ref];
+      if(p?.out && p?.inn){
+        out[p.idx]={
+          id:p.out.id,
+          _partner_id:p.inn.id,
+          type:'transfer',
+          amount:p.out.amount,
+          date:p.out.date,
+          time:p.out.time||null,
+          category_id:p.out.category_id||'other',
+          description:p.out.description||`Giro ${p.out.account}→${p.inn.account}`,
+          account:p.out.account,
+          account_to:p.inn.account,
+          tags:'[]',
+          _transfer_ref:ref,
+        };
+        delete pending[ref];
+      }
+      continue;
     }
-  });
-  return result;
+
+    out.push(attachMeta(row));
+  }
+
+  // Flush legacy orphans: try to infer the missing side from the description.
+  for(const [ref,p] of Object.entries(pending)){
+    const r=p?.out || p?.inn;
+    if(!r){ out[p.idx]=null; continue; }
+    const inferred=inferArrow(r.description);
+    if(inferred && inferred.from && inferred.to && !accEq(inferred.from,inferred.to)){
+      if(r.type==='expense'){
+        const from=resolveAcc(r.account);
+        if(!(accEq(from,inferred.from) || accEq(from,inferred.to))){ out[p.idx]=attachMeta(r); continue; }
+        const to=accEq(from,inferred.from)?inferred.to:inferred.from;
+        if(to && !accEq(from,to)){
+          out[p.idx]={
+            id:r.id,
+            type:'transfer',
+            amount:r.amount,
+            date:r.date,
+            time:r.time||null,
+            category_id:r.category_id||'other',
+            description:r.description||`Giro ${from}→${to}`,
+            account:from,
+            account_to:to,
+            tags:'[]',
+            _transfer_ref:ref,
+            _orphan:true,
+          };
+          continue;
+        }
+      } else if(r.type==='income'){
+        const to=resolveAcc(r.account);
+        if(!(accEq(to,inferred.from) || accEq(to,inferred.to))){ out[p.idx]=attachMeta(r); continue; }
+        const from=accEq(to,inferred.to)?inferred.from:inferred.to;
+        if(from && !accEq(from,to)){
+          out[p.idx]={
+            id:r.id,
+            type:'transfer',
+            amount:r.amount,
+            date:r.date,
+            time:r.time||null,
+            category_id:r.category_id||'other',
+            description:r.description||`Giro ${from}→${to}`,
+            account:from,
+            account_to:to,
+            tags:'[]',
+            _transfer_ref:ref,
+            _orphan:true,
+          };
+          continue;
+        }
+      }
+    }
+    // Fallback: keep it as a normal transaction with metadata.
+    out[p.idx]=attachMeta(r);
+  }
+
+  return out.filter(Boolean);
 }
 
 /* ============================================================
@@ -474,6 +566,17 @@ const DatabaseService = {
     try{ await db.from('transaction_meta').upsert({tx_id:id,tags:m.tags,account_to:m.account_to,updated_at:new Date().toISOString()},{onConflict:'tx_id'}); }
     catch(e){ console.warn('txmeta.save',e); }
   },
+  async saveTxMetaStrict(txId,meta){
+    const id=normId(txId); if(!id) throw new Error('tx_id mancante');
+    if(!AppState._localMeta) AppState._localMeta={};
+    const m={account_to:meta?.account_to||null,tags:meta?.tags||'[]'};
+    AppState._localMeta[id]=m;
+    this._saveTxMeta();
+    if(!db || !isUUID(id)) return m;
+    const {error}=await db.from('transaction_meta').upsert({tx_id:id,tags:m.tags,account_to:m.account_to,updated_at:new Date().toISOString()},{onConflict:'tx_id'});
+    if(error) throw error;
+    return m;
+  },
   async deleteTxMeta(txId){
     const id=normId(txId); if(!id) return;
     if(AppState._localMeta) delete AppState._localMeta[id];
@@ -684,12 +787,18 @@ const DatabaseService = {
       const localTxs=(loadTransactions()||[]).filter(t=>!isUUID(t.id)); if(!localTxs.length) return;
       for(const t of localTxs){
         if(t.type==='transfer'){
-          const ref=genUUID(); const desc=t.description||`Giro ${t.account}→${t.account_to}`;
-          const rowOut=toDbPayload(t,'expense',`[GIRO:${ref}] ${desc}`);
-          const rowIn ={...toDbPayload(t,'income', `[GIRO:${ref}] ${desc}`), account:t.account_to};
-          await Promise.all([dbInsertTxRow(rowOut), dbInsertTxRow(rowIn)]);
+          const desc=t.description||`Giro ${t.account}→${t.account_to}`;
+          const res=await dbInsertTxRow(toDbPayload(t,'transfer',desc));
+          if(res?.error) throw res.error;
+          const newId=res?.data?.[0]?.id;
+          if(newId){
+            const tags=t.tags||'[]';
+            const account_to=t.account_to||null;
+            await this.saveTxMetaStrict(newId,{account_to,tags});
+          }
         } else {
           const res=await dbInsertTxRow(toDbPayload(t));
+          if(res?.error) throw res.error;
           const newId=res.data?.[0]?.id;
           if(newId){ const tags=t.tags||'[]'; const account_to=t.account_to||null; if(account_to||tags!=='[]') await this.saveTxMeta(newId,{account_to,tags}); }
         }

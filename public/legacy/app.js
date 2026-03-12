@@ -2,6 +2,40 @@
    MONEY PRO X — Main Application Logic
    ============================================================ */
 
+(function lockViewportGestures(){
+  // User request: prevent page zoom (pinch, double-tap, ctrl/cmd+wheel).
+  // NOTE: This is intentionally strict and may reduce accessibility.
+  try{
+    ['gesturestart','gesturechange','gestureend'].forEach(evt=>{
+      document.addEventListener(evt, e=>{ e.preventDefault(); }, {passive:false});
+    });
+
+    // Desktop trackpad pinch usually comes through as ctrl/cmd + wheel.
+    window.addEventListener('wheel', e=>{
+      if(e.ctrlKey||e.metaKey) e.preventDefault();
+    }, {passive:false});
+
+    // Common keyboard zoom shortcuts.
+    document.addEventListener('keydown', e=>{
+      if(!(e.ctrlKey||e.metaKey)) return;
+      if(e.key==='+'||e.key==='='||e.key==='-'||e.key==='0') e.preventDefault();
+    }, {capture:true});
+
+    // iOS Safari double-tap zoom.
+    let lastTouchEnd=0;
+    document.addEventListener('touchend', e=>{
+      const now=Date.now();
+      if(now-lastTouchEnd<=300) e.preventDefault();
+      lastTouchEnd=now;
+    }, {passive:false});
+
+    // Some iOS versions expose `scale` during a pinch via touch events.
+    document.addEventListener('touchmove', e=>{
+      if(typeof e.scale==='number' && e.scale!==1) e.preventDefault();
+    }, {passive:false});
+  }catch(e){}
+})();
+
 function saveTxLocal(payload){
   if(AppState.editId){
     const i=AppState.transactions.findIndex(x=>x.id===AppState.editId);
@@ -21,6 +55,7 @@ async function saveTx(e){
     return;
   }
   showLoader();
+  let payload=null;
   try {
     const isTransfer=(AppState.fType==='transfer');
     const accFrom=document.getElementById('txAccFrom').value;
@@ -30,7 +65,7 @@ async function saveTx(e){
     if(isNaN(amt)||amt<=0){toast('Inserisci un importo valido','error');return;}
 
     const tags=isTransfer?'[]':JSON.stringify(Array.from(document.querySelectorAll('.tbtn.on')).map(b=>b.dataset.tag));
-    const payload={
+    payload={
       type:AppState.fType, amount:amt,
       date:document.getElementById('txDate').value,
       time:document.getElementById('txTime')?.value||'',
@@ -52,52 +87,90 @@ async function saveTx(e){
     }
 
     if(isTransfer){
-      // — TWO rows in DB with [GIRO:uuid] prefix —
-      const ref=genUUID();
+      // Giroconto (robusto): 1 riga `transactions` (type='transfer') + meta.account_to
+      const existing=AppState.editId ? AppState.transactions.find(x=>x.id===AppState.editId) : null;
+      const isLegacyExisting=!!(existing && (existing._transfer_ref || existing._partner_id));
       const desc=payload.description;
-      const rowOut=toDbPayload(payload,'expense',`[GIRO:${ref}] ${desc}`);
-      const rowIn ={...toDbPayload(payload,'income', `[GIRO:${ref}] ${desc}`), account:accTo};
+      let savedId=null;
 
-      if(AppState.editId){
-        const existing=AppState.transactions.find(x=>x.id===AppState.editId);
-        const oldRef=existing?._transfer_ref;
-        if(oldRef){
-          await db.from('transactions').delete().like('description',`[GIRO:${oldRef}]%`);
-        } else if(existing?._partner_id){
-          await Promise.all([
-            db.from('transactions').delete().eq('id',AppState.editId),
-            db.from('transactions').delete().eq('id',existing._partner_id),
-          ]);
-        } else {
-          await db.from('transactions').delete().eq('id',AppState.editId);
+      // Update in-place only for "new" giroconti (single-row) that already exist on DB.
+      if(AppState.editId && !isLegacyExisting && isUUID(AppState.editId)){
+        const upd=await dbUpdateTxRow(AppState.editId, toDbPayload(payload,'transfer',desc));
+        if(upd.error) throw upd.error;
+        savedId=upd.data?.[0]?.id || null;
+      }
+      // Fallback: insert (new giro, local-only edit, or legacy conversion).
+      if(!savedId){
+        const ins=await dbInsertTxRow(toDbPayload(payload,'transfer',desc));
+        if(ins.error) throw ins.error;
+        savedId=ins.data?.[0]?.id || null;
+      }
+      if(!savedId) throw new Error('Salvataggio giro fallito');
+
+      // Meta e' necessaria per ricostruire il "conto di destinazione".
+      await DatabaseService.saveTxMetaStrict(savedId,{account_to:accTo,tags:'[]'});
+
+      // If editing a legacy giro (2 righe), convert it by deleting the old pair.
+      if(AppState.editId && isLegacyExisting){
+        try{
+          const oldRef=existing?._transfer_ref;
+          if(oldRef){
+            await db.from('transactions').delete().like('description',`[GIRO:${oldRef}]%`);
+          } else if(existing?._partner_id){
+            await Promise.all([
+              db.from('transactions').delete().eq('id',AppState.editId),
+              db.from('transactions').delete().eq('id',existing._partner_id),
+            ]);
+          } else {
+            await db.from('transactions').delete().eq('id',AppState.editId);
+          }
+          try{ await DatabaseService.deleteTxMeta(AppState.editId); }catch(e){}
+          try{ if(existing?._partner_id) await DatabaseService.deleteTxMeta(existing._partner_id); }catch(e){}
+        }catch(delErr){
+          // Rollback: remove the new single-row giro to avoid duplicates.
+          try{ await db.from('transactions').delete().eq('id',savedId); }catch(e){}
+          try{ await DatabaseService.deleteTxMeta(savedId); }catch(e){}
+          throw delErr;
         }
       }
 
-      const [r1,r2]=await Promise.all([dbInsertTxRow(rowOut), dbInsertTxRow(rowIn)]);
-      if(r1.error) throw r1.error;
-      if(r2.error) throw r2.error;
-
       const merged={
-        id:r1.data[0].id, _partner_id:r2.data[0].id,
-        type:'transfer', amount:amt, date:payload.date, time:payload.time||null,
-        category_id:payload.category_id, description:desc,
-        account:accFrom, account_to:accTo, tags:'[]',
-        _transfer_ref:ref,
+        id:savedId,
+        type:'transfer',
+        amount:amt,
+        date:payload.date,
+        time:payload.time||null,
+        category_id:payload.category_id,
+        description:desc,
+        account:accFrom,
+        account_to:accTo,
+        tags:'[]',
       };
-      if(AppState.editId){ const i=AppState.transactions.findIndex(x=>x.id===AppState.editId); if(i>=0) AppState.transactions[i]=merged; else AppState.transactions.push(merged); }
-      else AppState.transactions.push(merged);
+      if(AppState.editId){
+        const i=AppState.transactions.findIndex(x=>x.id===AppState.editId);
+        if(i>=0) AppState.transactions[i]=merged; else AppState.transactions.push(merged);
+      } else {
+        AppState.transactions.push(merged);
+      }
       saveTransactions();
-      toast(`Giro ${fmt(amt)} salvato ✓`,'success');
+      toast(AppState.editId?`Giro ${fmt(amt)} aggiornato ✓`:`Giro ${fmt(amt)} salvato ✓`,'success');
       if(!OFFLINE&&db){ await DatabaseService.updateAccountBalance(accFrom); await DatabaseService.updateAccountBalance(accTo); }
 
     } else {
       // — Normal transaction —
       const dbP=toDbPayload(payload);
-      let result;
-      if(AppState.editId){ result=await dbUpdateTxRow(AppState.editId, dbP); }
-      else         { result=await dbInsertTxRow(dbP); }
-      if(result.error) throw result.error;
-      const savedId=AppState.editId||(result.data&&result.data[0]?.id);
+      let result=null;
+      let savedId=null;
+      if(AppState.editId && isUUID(AppState.editId)){
+        result=await dbUpdateTxRow(AppState.editId, dbP);
+        if(result.error) throw result.error;
+        savedId=result.data?.[0]?.id || null;
+      }
+      if(!savedId){
+        result=await dbInsertTxRow(dbP);
+        if(result.error) throw result.error;
+        savedId=result.data?.[0]?.id || null;
+      }
       if(savedId){
         try{
           if(payload.account_to||tags!=='[]') await DatabaseService.saveTxMeta(savedId,{account_to:payload.account_to,tags});
@@ -115,12 +188,16 @@ async function saveTx(e){
     }
   }catch(err){
     console.error('saveTx error:',err);
-    saveTxLocal(payload);
-    toast(`Salvato localmente (${err.message||'errore sync'})`,'warn');
-    try {
-      if (payload.type === 'transfer') { await DatabaseService.updateAccountBalance(payload.account); if (payload.account_to) await DatabaseService.updateAccountBalance(payload.account_to); }
-      else await DatabaseService.updateAccountBalance(payload.account);
-    } catch (e) {}
+    if(payload){
+      try{ saveTxLocal(payload); }catch(e){}
+      toast(`Salvato localmente (${err.message||'errore sync'})`,'warn');
+      try {
+        if (payload.type === 'transfer') { await DatabaseService.updateAccountBalance(payload.account); if (payload.account_to) await DatabaseService.updateAccountBalance(payload.account_to); }
+        else await DatabaseService.updateAccountBalance(payload.account);
+      } catch (e) {}
+    } else {
+      toast(`Errore: ${err.message||'operazione non riuscita'}`,'error');
+    }
   } finally {
     hideLoader();
     closeAll(); renderAll(); if(!AppState.editId) checkAch();
@@ -190,16 +267,16 @@ async function undoTx(){
   if(!OFFLINE&&db){
     try{
       if(t.type==='transfer'){
-        const ref=t._transfer_ref||genUUID();
-        const desc=t.description||'';
-        const rowOut=toDbPayload(t,'expense',`[GIRO:${ref}] ${desc}`);
-        const rowIn ={...toDbPayload(t,'income',`[GIRO:${ref}] ${desc}`),account:t.account_to};
-        const [r1,r2]=await Promise.all([dbInsertTxRow(rowOut), dbInsertTxRow(rowIn)]);
-        if(r1.error) throw r1.error;
-        if(r2.error) throw r2.error;
-        if(r1.data?.[0]?.id) t.id=r1.data[0].id;
-        if(r2.data?.[0]?.id) t._partner_id=r2.data[0].id;
-        t._transfer_ref=ref;
+        const desc=t.description||`Giro ${t.account}→${t.account_to}`;
+        const res=await dbInsertTxRow(toDbPayload(t,'transfer',desc));
+        if(res.error) throw res.error;
+        const newId=res.data?.[0]?.id;
+        if(newId){
+          t.id=newId;
+          delete t._partner_id;
+          delete t._transfer_ref;
+          await DatabaseService.saveTxMetaStrict(newId,{account_to:t.account_to||null,tags:'[]'});
+        }
       } else {
         const res=await dbInsertTxRow(toDbPayload(t));
         if(res.error) throw res.error;
@@ -236,20 +313,19 @@ async function dupTx(id){
   if(!OFFLINE&&db){
     try{
       if(nt.type==='transfer'){
-        const ref=genUUID(); const desc=nt.description||'';
-        const rowOut=toDbPayload(nt,'expense',`[GIRO:${ref}] ${desc}`);
-        const rowIn ={...toDbPayload(nt,'income',`[GIRO:${ref}] ${desc}`),account:nt.account_to};
-        const [r1,r2]=await Promise.all([dbInsertTxRow(rowOut), dbInsertTxRow(rowIn)]);
-        if(r1.error) throw r1.error;
-        if(r2.error) throw r2.error;
+        const desc=nt.description||`Giro ${nt.account}→${nt.account_to}`;
+        const res=await dbInsertTxRow(toDbPayload(nt,'transfer',desc));
+        if(res.error) throw res.error;
+        const newId=res.data?.[0]?.id||tempId;
+        if(newId && newId!==tempId){
+          await DatabaseService.saveTxMetaStrict(newId,{account_to:nt.account_to||null,tags:'[]'});
+        }
         const merged={
-          id:r1.data?.[0]?.id||tempId,
-          _partner_id:r2.data?.[0]?.id||null,
-          type:'transfer', amount:nt.amount, date:nt.date, time:nt.time||null,
-          category_id:nt.category_id||'other',
-          description:desc||`Giro ${nt.account}→${nt.account_to}`,
-          account:nt.account, account_to:nt.account_to, tags:'[]',
-          _transfer_ref:ref,
+          ...nt,
+          id:newId,
+          type:'transfer',
+          description:desc,
+          tags:'[]',
         };
         const i=AppState.transactions.findIndex(x=>x.id===tempId);
         if(i>=0) AppState.transactions[i]=merged;
@@ -306,6 +382,22 @@ async function loadData(force=false){
       return;
     }
     AppState.transactions=processDbRows(data||[]);
+    // Self-heal: legacy giroconti "orfani" (una sola metà salvata) → promuovi a `type='transfer'` + txmeta.account_to.
+    try{
+      const orphans=(AppState.transactions||[]).filter(t=>t&&t.type==='transfer'&&t._orphan&&isUUID(t.id)&&t.account&&t.account_to);
+      if(orphans.length){
+        (async()=>{
+          for(const t of orphans.slice(0,12)){
+            try{
+              const desc=t.description||`Giro ${t.account}→${t.account_to}`;
+              const upd=await dbUpdateTxRow(t.id,toDbPayload(t,'transfer',desc));
+              if(upd?.error) throw upd.error;
+              await DatabaseService.saveTxMetaStrict(t.id,{account_to:t.account_to,tags:'[]'});
+            }catch(e){ console.warn('giro.repair orphan',t?.id,e); }
+          }
+        })().catch(()=>{});
+      }
+    }catch(e){}
     saveTransactions();
     renderAll();
     updateSyncStatus('ok');
@@ -3473,16 +3565,16 @@ async function injectRecurring(){
       if(!OFFLINE&&db){
         try{
           if(payload.type==='transfer'){
-            const ref=genUUID();
             const desc=payload.description||`Giro ${payload.account}→${payload.account_to}`;
-            const rowOut=toDbPayload(payload,'expense',`[GIRO:${ref}] ${desc}`);
-            const rowIn ={...toDbPayload(payload,'income',`[GIRO:${ref}] ${desc}`),account:payload.account_to};
-            const [r1,r2]=await Promise.all([dbInsertTxRow(rowOut), dbInsertTxRow(rowIn)]);
-            if(r1.error) throw r1.error;
-            if(r2.error) throw r2.error;
-            payload.id=r1.data?.[0]?.id||payload.id;
-            payload._partner_id=r2.data?.[0]?.id||null;
-            payload._transfer_ref=ref;
+            const res=await dbInsertTxRow(toDbPayload(payload,'transfer',desc));
+            if(res.error) throw res.error;
+            const newId=res.data?.[0]?.id;
+            if(newId){
+              payload.id=newId;
+              delete payload._partner_id;
+              delete payload._transfer_ref;
+              await DatabaseService.saveTxMetaStrict(newId,{account_to:payload.account_to||null,tags:'[]'});
+            }
             DatabaseService.updateAccountBalance(payload.account);
             if(payload.account_to) DatabaseService.updateAccountBalance(payload.account_to);
           } else {
