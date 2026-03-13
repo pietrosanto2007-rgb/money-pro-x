@@ -423,24 +423,25 @@ async function loadData(force=false){
 ============================================================ */
 // Fintech brand icons: { key: {label, bg, fg, text, emoji} }
 const FINTECH_BRANDS = {
-  paypal:    {label:'PayPal',    bg:'#003087',fg:'#009cde',text:'PP',  emoji:'🅿'},
-  hype:      {label:'Hype',     bg:'#6B21A8',fg:'#A855F7',text:'HY',  emoji:'💜'},
-  revolut:   {label:'Revolut',  bg:'#191C1F',fg:'#FF6B35',text:'RV',  emoji:'🔶'},
-  satispay:  {label:'Satispay', bg:'#E4002B',fg:'#FF4461',text:'S',   emoji:'🔴'},
+  paypal:    {label:'PayPal',    bg:'#003087',fg:'#009cde',text:'PP',  emoji:'🅿', localIcon:'/Icone/PayPal.png'},
+  hype:      {label:'Hype',     bg:'#6B21A8',fg:'#A855F7',text:'HY',  emoji:'💜', localIcon:'/Icone/Hype.png'},
+  revolut:   {label:'Revolut',  bg:'#191C1F',fg:'#FF6B35',text:'RV',  emoji:'🔶', localIcon:'/Icone/Revolut.png'},
+  satispay:  {label:'Satispay', bg:'#E4002B',fg:'#FF4461',text:'S',   emoji:'🔴', localIcon:'/Icone/Satispay.png'},
   n26:       {label:'N26',      bg:'#1A1A1A',fg:'#00B2A9',text:'N26', emoji:'🏦'},
-  postepay:  {label:'Postepay', bg:'#F7941D',fg:'#FFC342',text:'PP',  emoji:'🟠'},
+  postepay:  {label:'Postepay', bg:'#F7941D',fg:'#FFC342',text:'PP',  emoji:'🟠', localIcon:'/Icone/Postepay.jpeg'},
   wise:      {label:'Wise',     bg:'#9FE870',fg:'#163300',text:'W',   emoji:'💚'},
   monzo:     {label:'Monzo',    bg:'#FF3464',fg:'#FFD4E0',text:'M',   emoji:'🌸'},
   bunq:      {label:'bunq',     bg:'#00A86B',fg:'#E8FFF4',text:'bq',  emoji:'🟢'},
   tinaba:    {label:'Tinaba',   bg:'#FF6600',fg:'#fff',   text:'Ti',  emoji:'🟠'},
   illimity:  {label:'illimity', bg:'#1B3A6B',fg:'#5AB4FF',text:'Il',  emoji:'🔵'},
   buddybank: {label:'Buddybank',bg:'#FF5F1F',fg:'#fff',   text:'BB',  emoji:'🟠'},
-  fineco:    {label:'FinecoBank',bg:'#005BAC',fg:'#fff',  text:'FN',  emoji:'🔵'},
+  fineco:    {label:'FinecoBank',bg:'#005BAC',fg:'#fff',  text:'FN',  emoji:'🔵', localIcon:'/Icone/Fineco.png'},
   mediolanum:{label:'Mediolanum',bg:'#00A86B',fg:'#fff',  text:'MD',  emoji:'🟢'},
   unicredit: {label:'UniCredit',bg:'#E3000F',fg:'#fff',   text:'UC',  emoji:'🔴'},
   intesa:    {label:'Intesa SP',bg:'#008751',fg:'#fff',   text:'IS',  emoji:'🟢'},
   bnl:       {label:'BNL',      bg:'#004A97',fg:'#fff',   text:'BNL', emoji:'🔵'},
   mps:       {label:'Monte Paschi',bg:'#00294D',fg:'#D4AF37',text:'MPS',emoji:'🏦'},
+  vinted:    {label:'Vinted',   bg:'#00A1B2',fg:'#fff',   text:'V',   emoji:'👗', localIcon:'/Icone/Vinted.png'},
 };
 
 // Generic account icons (lucide icon name → display label)
@@ -481,6 +482,11 @@ function renderAccIcon(acc, size=26, radius=8) {
   const brand = detectBrand(acc.name);
   if (brand) {
     const b = FINTECH_BRANDS[brand];
+    if (b.localIcon) {
+      return `<div class="ft-badge" style="width:${size}px;height:${size}px;border-radius:${radius}px;background:white;padding:2px;border:1px solid var(--bo)">
+        <img src="${b.localIcon}" alt="${b.label}" style="width:100%;height:100%;object-fit:contain;border-radius:${radius-2}px">
+      </div>`;
+    }
     return `<div class="ft-badge" style="width:${size}px;height:${size}px;border-radius:${radius}px;background:${b.bg};font-size:${Math.floor(size*.38)}px">${b.text}</div>`;
   }
   return `<div class="ft-badge" style="width:${size}px;height:${size}px;border-radius:${radius}px;background:${acc.color||'var(--br)'}22">
@@ -604,6 +610,11 @@ async function init(){
   if(!UserConfig.investments)   UserConfig.investments=[];
   if(typeof UserConfig.investIncludeInTotal!=='boolean') UserConfig.investIncludeInTotal=true;
   if(!UserConfig.investApi)     UserConfig.investApi={provider:'finnhub',apiKey:''};
+
+  // 0. Auto-refresh investments on load
+  if((UserConfig.investments||[]).length > 0) {
+    refreshInvestQuotes().catch(()=>{});
+  }
 
   // Prefer per-entity caches (newer than snapshot in mpxCfg2)
   try{ const subs=JSON.parse(localStorage.getItem('mpx_subscriptions')||'null'); if(subs?.length) UserConfig.subscriptions=subs; }catch(e){}
@@ -3800,7 +3811,7 @@ async function searchInvestSymbols(e){
       const desc = r.description || '';
       const exch = r.exchange || '';
       const meta = [exch,r.type].filter(Boolean).join(' · ');
-      return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onclick="selectInvestSymbol('${sym.replace(/'/g,'\\\'')}', ${JSON.stringify(desc)})">
+      return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${sym.replace(/'/g,'\\\'')}', ${JSON.stringify(desc)})">
         <div class="font-bold">${sym}</div>
         <div style="color:var(--t2)">${desc||'-'}</div>
         ${meta?`<div class="mt-0.5" style="color:var(--t3)">${meta}</div>`:''}
