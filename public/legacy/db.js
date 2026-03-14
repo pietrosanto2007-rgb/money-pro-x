@@ -826,6 +826,9 @@ const DatabaseService = {
           const j=UserConfig.investments.findIndex(x=>idEq(x.id,v.id));
           if(j>=0) UserConfig.investments[j].id=v.id;
           this._saveInvestments();
+        } else if(error){
+          console.error('Supabase invest.save error:', error);
+          if(typeof toast === 'function') toast('Errore salvataggio database','error');
         }
       }
     }catch(e){ console.warn('invest.save',e); }

@@ -3806,8 +3806,8 @@ async function searchInvestSymbols(e){
     const data = await resp.json();
     const results = Array.isArray(data?.result) ? data.result : [];
     const filtered = results
-      .filter(r => r.symbol && (r.type === 'Common Stock' || r.type === 'ETF' || r.type === 'Stock' || !r.type))
-      .slice(0, 8);
+      .filter(r => r.symbol) // Relaxed filter to support international stocks and more asset types
+      .slice(0, 10);
     // se l'utente ha continuato a scrivere, ignora questa risposta
     if(AppState.investSearch.query !== currentQuery) return;
     AppState.investSearch.results = filtered;
@@ -3863,7 +3863,11 @@ async function validateInvestSymbol(sym){
     if(!resp.ok) return false;
     const data = await resp.json();
     const results = Array.isArray(data?.result) ? data.result : [];
-    return results.some(r => (r.symbol||'').toUpperCase() === s);
+    // Relaxed validation: check if the symbol is contained in the results (case-insensitive)
+    return results.some(r => {
+      const rs = (r.symbol||'').toUpperCase();
+      return rs === s || rs.startsWith(s + '.') || s.startsWith(rs + '.');
+    });
   }catch(e){
     console.warn('invest.validate',e);
     return false;
