@@ -230,21 +230,13 @@
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
     <div class="card p-4 space-y-2" style="background:var(--bg2); border:none">
-      <p class="text-sm font-bold">Collega una API mercato (es. Finnhub)</p>
-      <p class="text-xs" style="color:var(--t2)">Inserisci la tua API key personale per vedere il valore dei tuoi investimenti aggiornato in tempo reale. Puoi saltare questo passaggio e configurarlo più tardi nelle Impostazioni.</p>
+      <p class="text-sm font-bold">Collega Twelve Data API</p>
+      <p class="text-xs" style="color:var(--t2)">Ottieni dati accurati per azioni globali e italiane (Borsa di Milano). Inserisci la tua API Key di Twelve Data. Puoi saltare questo passaggio e configurarlo più tardi.</p>
     </div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-      <div>
-        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Provider</label>
-        <select id="invProviderSel" class="inp text-sm">
-          <option value="finnhub">🇺🇸 Finnhub (Gratis)</option>
-          <option value="alphavantage">🌍 Alpha Vantage (Global)</option>
-        </select>
-      </div>
-      <div>
-        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">API Key</label>
-        <input type="text" id="invApiKeyInp" class="inp text-sm" placeholder="Chiave API..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace">
-      </div>
+    <div>
+      <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Chiave API Twelve Data</label>
+      <input type="text" id="invApiKeyInp" class="inp text-sm" placeholder="Es. 8382ab..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace">
+      <p class="text-[9px] mt-1" style="color:var(--t3)">Simboli azioni italiane: es. ENI:XMIL, A2A:XMIL</p>
     </div>
     <div class="flex items-center justify-between rounded-xl px-3 py-2.5" style="background:var(--bg2)">
       <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Somma al Patrimonio Netto</span>
@@ -925,24 +917,18 @@
 
   <div class="card p-5 space-y-3" style="border-color:rgba(0,102,255,.2)">
     <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Mercati & Investimenti</h3>
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+    <div class="space-y-4">
       <div>
-        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Provider Dati</label>
-        <select id="setInvProvider" class="inp text-sm" onchange="saveSettings()">
-          <option value="finnhub">🇺🇸 Finnhub</option>
-          <option value="alphavantage">🌍 Alpha Vantage (Global)</option>
-        </select>
+        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Chiave API Twelve Data</label>
+        <input type="text" id="setInvApiKey" class="inp text-sm" placeholder="Inserisci chiave API..." oninput="saveSettings()" style="font-family:monospace">
+        <p class="text-[9px] mt-1" style="color:var(--t3)">Simboli azioni italiane: es. ENI:XMIL</p>
       </div>
-      <div>
-        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">API Key</label>
-        <input type="text" id="setInvApiKey" class="inp text-sm" placeholder="Chiave API..." oninput="saveSettings()" style="font-family:monospace">
+      <div class="flex items-center justify-between rounded-xl px-3 py-2.5" style="background:var(--bg2)">
+        <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Includi nel Patrimonio Netto</span>
+        <label class="tog"><input type="checkbox" id="setInvInclude" onchange="saveSettings()"><span class="tog-sl"></span></label>
       </div>
+      <button onclick="refreshInvestQuotes()" class="w-full py-2 rounded-xl text-xs font-bold flex justify-center items-center gap-2" style="background:rgba(0,102,255,.08);color:var(--br)"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Aggiorna Prezzi Ora</button>
     </div>
-    <div class="flex items-center justify-between rounded-xl px-3 py-2.5" style="background:var(--bg2)">
-      <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Includi in Patrimonio Netto</span>
-      <label class="tog"><input type="checkbox" id="setInvInclude" onchange="saveSettings()"><span class="tog-sl"></span></label>
-    </div>
-    <button onclick="refreshInvestQuotes()" class="w-full py-2 rounded-xl text-xs font-bold flex justify-center items-center gap-2" style="background:rgba(0,102,255,.08);color:var(--br)"><i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>Aggiorna Prezzi Ora</button>
   </div>
 
   <div class="card p-5 space-y-3" style="border-color:rgba(0,102,255,.2)">
@@ -1091,7 +1077,7 @@
         <div>
           <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Simbolo</label>
           <div class="relative">
-            <input type="text" id="invSymbol" class="inp text-sm" placeholder="Es. AAPL, MSFT..." oninput="searchInvestSymbols(event)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+            <input type="text" id="invSymbol" class="inp text-sm" placeholder="Es. AAPL, ENI:XMIL..." oninput="searchInvestSymbols(event)" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
             <div id="invSymbolSuggest" class="absolute left-0 right-0 mt-1 rounded-xl border text-[11px] bg-[var(--card)] shadow-lg max-h-56 overflow-y-auto hidden" style="border-color:var(--bo);z-index:40"></div>
           </div>
         </div>

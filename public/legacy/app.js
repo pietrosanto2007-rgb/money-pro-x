@@ -541,7 +541,7 @@ async function init(){
   if(!UserConfig.goals)         UserConfig.goals=[];
   if(!UserConfig.investments)   UserConfig.investments=[];
   if(typeof UserConfig.investIncludeInTotal!=='boolean') UserConfig.investIncludeInTotal=true;
-  if(!UserConfig.investApi)     UserConfig.investApi={provider:'finnhub',apiKey:''};
+  if(!UserConfig.investApi)     UserConfig.investApi={apiKey:''};
 
   // 0. Auto-refresh investments on load (REMOVED: moved later to ensure data is loaded first)
 
@@ -1083,10 +1083,8 @@ function applyLayouts(){
   // Sync Investment Settings UI
   if(UserConfig.investApi){
     const inpKey = document.getElementById('setInvApiKey');
-    const selProv = document.getElementById('setInvProvider');
     const chkInc = document.getElementById('setInvInclude');
     if(inpKey) inpKey.value = UserConfig.investApi.apiKey || '';
-    if(selProv) selProv.value = UserConfig.investApi.provider || 'finnhub';
     if(chkInc) chkInc.checked = UserConfig.investIncludeInTotal !== false;
   }
 }
@@ -2289,21 +2287,14 @@ function saveSettings(){
   UserConfig.goalName = document.getElementById('gNameI')?.value||'';
   UserConfig.goalVal  = document.getElementById('gValI')?.value||'';
 
-  // Investment settings from new UI
-  const invProv = document.getElementById('setInvProvider')?.value || 'finnhub';
   const invKey = document.getElementById('setInvApiKey')?.value || '';
   const invInc = document.getElementById('setInvInclude')?.checked !== false;
 
-  UserConfig.investApi = { apiKey: invKey, provider: invProv };
+  UserConfig.investApi = { apiKey: invKey };
   UserConfig.investIncludeInTotal = invInc;
-  
-  // Persist to localStorage for immediate retrieval on reload
   localStorage.setItem('mpxInvestApiKey', invKey);
-  localStorage.setItem('mpxInvestProvider', invProv);
 
   saveConfig(); 
-  // We don't renderAll here to avoid focus loss during typing, 
-  // unless it's a select/toggle. 
 }
 function updateSyncStatus(state){
   const dot=document.getElementById('sDot');
@@ -3556,51 +3547,49 @@ function renderInvestMini(currentValue, effectiveNet){
     <button onclick="openInvestM()" class="mt-1 text-[10px] font-bold px-2 py-1 rounded-lg" style="background:var(--bg2);color:var(--t2)">${linkLabel}</button>
   </div>`;
 }
-async function refreshInvestQuotes(){
+async function refreshInvestQuotes(force=false){
   try{
     const api = UserConfig.investApi||{};
     const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
     const invs = (UserConfig.investments||[]).filter(i=>i.symbol && i.quantity>0);
     if(!invs.length) return;
-    if(!token){
-      console.warn('Invest API key mancante');
-      return;
-    }
-    const symbols=[...new Set(invs.map(i=>String(i.symbol||'').toUpperCase()).filter(Boolean))];
-    const quotes={...(AppState.investQuotes||{})};
-    await Promise.all(symbols.map(async sym=>{
-      try{
-        const provider = (UserConfig.investApi||{}).provider || 'finnhub';
-        let url = '';
-        if(provider === 'alphavantage'){
-          url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(token)}`;
-        } else {
-          url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(token)}`;
-        }
-        
-        const resp=await fetch(url);
-        if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data=await resp.json();
-        
-        let price = null;
-        if(provider === 'alphavantage'){
-          const quote = data['Global Quote'];
-          price = quote && quote['05. price'] ? parseFloat(quote['05. price']) : null;
-        } else {
-          price = typeof data?.c==='number' && data.c > 0 ? data.c : null;
-        }
+    if(!token){ console.warn('Twelve Data API key missing'); return; }
 
-        if(price){
-          quotes[sym]={price,at:Date.now(),raw:data};
-        }
-      }catch(e){
-        console.warn('quote',sym,e);
+    // Throttle: avoid refreshing more than once every 1 minute unless forced
+    const now = Date.now();
+    if(!force && AppState._lastQuoteRefresh && (now - AppState._lastQuoteRefresh < 60000)) return;
+
+    const symbols = [...new Set(invs.map(i=>String(i.symbol||'').toUpperCase()).filter(Boolean))];
+    if(!symbols.length) return;
+
+    // Twelve Data batch quote: symbols=SYM1,SYM2...
+    const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbols.join(','))}&apikey=${encodeURIComponent(token)}`;
+    const resp = await fetch(url);
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if(data && data.code && data.code !== 200){ throw new Error(data.message || 'Twelve Data API error'); }
+
+    const quotes = { ...(AppState.investQuotes||{}) };
+    // Twelve Data: 1 symbol = single object { close, name, currency }; multiple = { SYM1: {...}, "ENI:XMIL": {...} }
+    const parsePrice = (d)=>{ const p = d?.close ?? d?.price; const v = typeof p === 'number' ? p : parseFloat(p); return Number.isFinite(v) ? v : null; };
+    if(symbols.length === 1){
+      const s = symbols[0];
+      const price = parsePrice(data);
+      if(data && price != null){ quotes[s] = { price, at: now, raw: data }; }
+    } else {
+      for(const s of symbols){
+        const q = data[s];
+        const price = q ? parsePrice(q) : null;
+        if(price != null){ quotes[s] = { price, at: now, raw: q }; }
       }
-    }));
-    AppState.investQuotes=quotes;
+    }
+
+    AppState.investQuotes = quotes;
+    AppState._lastQuoteRefresh = now;
     renderAll('dash');
   }catch(e){
-    console.warn('refreshInvestQuotes',e);
+    console.warn('Twelve Data refresh failure',e);
+    if(force) toast('Errore aggiornamento prezzi','error');
   }
 }
 async function addInvestment(){
@@ -3720,11 +3709,9 @@ function openInvestM(){
 function openInvestOnboard(){
   try{
     const keyInp=document.getElementById('invApiKeyInp');
-    const provSel=document.getElementById('invProviderSel');
     const toggle=document.getElementById('invIncludeToggle');
     const api=UserConfig.investApi||{};
     if(keyInp) keyInp.value=api.apiKey||localStorage.getItem('mpxInvestApiKey')||'';
-    if(provSel) provSel.value=api.provider||localStorage.getItem('mpxInvestProvider')||'finnhub';
     if(toggle) toggle.checked=UserConfig.investIncludeInTotal!==false;
   }catch(e){}
   openModal('investOnboardM');
@@ -3735,7 +3722,6 @@ function skipInvestOnboard(){
 }
 function saveInvestOnboard(){
   const key=(document.getElementById('invApiKeyInp')?.value||'').trim();
-  const prov=(document.getElementById('invProviderSel')?.value||'finnhub');
   const include=document.getElementById('invIncludeToggle')?.checked!==false;
   if(!key){
     toast('Inserisci una API key valida','error');
@@ -3743,14 +3729,13 @@ function saveInvestOnboard(){
   }
   try{
     localStorage.setItem('mpxInvestApiKey',key);
-    localStorage.setItem('mpxInvestProvider',prov);
     localStorage.setItem('mpxInvestOnboardDone','1');
-    UserConfig.investApi={apiKey:key,provider:prov};
+    UserConfig.investApi={apiKey:key};
     UserConfig.investIncludeInTotal=include;
     DatabaseService.pushSettings();
-    toast('Configurazione salvataggi ✓','success');
+    toast('Configurazione completata! ✓','success');
     closeAll();
-    refreshInvestQuotes();
+    refreshInvestQuotes(true);
     renderAll('dash');
   }catch(e){ toast('Errore nel salvataggio','error'); }
 }
@@ -3768,40 +3753,37 @@ async function searchInvestSymbols(e){
     AppState.investSearch.results = [];
     return;
   }
-  const api = UserConfig.investApi || {};
-  const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
-  if(!token){
-    box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t2)">Configura prima una API key investimenti.</div>';
-    box.classList.remove('hidden');
-    return;
-  }
-  const currentQuery = q;
+  if(q === AppState.investSearch.query) return;
   AppState.investSearch.query = q;
+  
+  const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
+  if(!token) return;
+
   try{
-    const resp = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(q)}&token=${encodeURIComponent(token)}`);
+    // Twelve Data search
+    const url = `https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(q)}&apikey=${encodeURIComponent(token)}`;
+    const resp = await fetch(url);
     if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    const results = Array.isArray(data?.result) ? data.result : [];
-    const filtered = results
-      .filter(r => r.symbol) // Relaxed filter to support international stocks and more asset types
-      .slice(0, 10);
-    // se l'utente ha continuato a scrivere, ignora questa risposta
-    if(AppState.investSearch.query !== currentQuery) return;
-    AppState.investSearch.results = filtered;
-    if(!filtered.length){
-      box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t2)">Nessun titolo trovato.</div>';
+    const results = Array.isArray(data.data) ? data.data : [];
+    AppState.investSearch.results = results;
+
+    if(!results.length){
+      box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t3)">Nessun risultato.</div>';
       box.classList.remove('hidden');
       return;
     }
-    box.innerHTML = filtered.map(r=>{
-      const sym = (r.symbol||'').toUpperCase();
-      const desc = r.description || '';
-      const exch = r.exchange || '';
-      const meta = [exch,r.type].filter(Boolean).join(' · ');
-      return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${sym.replace(/'/g,'\\\'')}', ${JSON.stringify(desc).replace(/"/g, '&quot;')})">
-        <div class="font-bold">${sym}</div>
-        <div style="color:var(--t2)">${desc||'-'}</div>
-        ${meta?`<div class="mt-0.5" style="color:var(--t3)">${meta}</div>`:''}
+
+    box.innerHTML = results.slice(0, 10).map(r => {
+      const sym = r.symbol;
+      const exch = r.exchange;
+      const fullSym = exch ? `${sym}:${exch}` : sym;
+      const desc = r.instrument_name || sym;
+      
+      return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${fullSym}', ${JSON.stringify(desc).replace(/"/g, '&quot;')})">
+        <div class="font-bold">${sym} <span class="text-[9px] opacity-70">(${exch})</span></div>
+        <div style="color:var(--t2)">${desc}</div>
+        <div class="mt-0.5" style="color:var(--t3)">${r.instrument_type} · ${r.country}</div>
       </button>`;
     }).join('');
     box.classList.remove('hidden');
@@ -3829,46 +3811,39 @@ function selectInvestSymbol(sym, desc){
 async function validateInvestSymbol(sym){
   const s = (sym||'').trim().toUpperCase();
   if(!s) return false;
-  AppState.investSearch = AppState.investSearch || {query:'',results:[]};
-  const cached = (AppState.investSearch.results||[]).some(r => (r.symbol||'').toUpperCase() === s);
-  if(cached) return true;
-  const api = UserConfig.investApi || {};
-  const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
-  if(!token) return false;
+  const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
+  if(!token) return true;
   try{
-    const resp = await fetch(`https://finnhub.io/api/v1/search?q=${encodeURIComponent(s)}&token=${encodeURIComponent(token)}`);
-    if(!resp.ok) return false;
+    const url = `https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(s.split(':')[0])}&apikey=${encodeURIComponent(token)}`;
+    const resp = await fetch(url);
     const data = await resp.json();
-    const results = Array.isArray(data?.result) ? data.result : [];
-    // Relaxed validation: check if the symbol is contained in the results (case-insensitive)
-    return results.some(r => {
-      const rs = (r.symbol||'').toUpperCase();
-      return rs === s || rs.startsWith(s + '.') || s.startsWith(rs + '.');
-    });
-  }catch(e){
-    console.warn('invest.validate',e);
-    return false;
-  }
+    const results = Array.isArray(data.data) ? data.data : [];
+    const match = (r)=> (r.exchange ? `${r.symbol}:${r.exchange}` : r.symbol) === s || r.symbol === s;
+    return results.some(match);
+  }catch(e){ return false; }
 }
 
 async function fetchInvestProfile(sym){
   const symbol = (sym||'').trim().toUpperCase();
   if(!symbol) return;
-  const api = UserConfig.investApi || {};
-  const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
+  const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
   if(!token) return;
   try{
-    const resp = await fetch(`https://finnhub.io/api/v1/stock/profile2?symbol=${encodeURIComponent(symbol)}&token=${encodeURIComponent(token)}`);
+    // Twelve Data quote also returns company name and currency
+    const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(token)}`;
+    const resp = await fetch(url);
     if(!resp.ok) return;
     const data = await resp.json();
-    if(!data || Object.keys(data).length===0) return;
+    if(!data || !data.symbol) return;
+    
     AppState.investProfiles = AppState.investProfiles || {};
     const prof = {
-      name: data.name || data.country || symbol,
+      name: data.name || symbol,
       currency: data.currency || '',
-      logoUrl: data.logo || '',
+      logoUrl: `https://api.twelvedata.com/logo?symbol=${encodeURIComponent(symbol.split(':')[0])}&apikey=${encodeURIComponent(token)}`,
     };
     AppState.investProfiles[symbol] = prof;
+    
     const nameEl = document.getElementById('invName');
     const curEl  = document.getElementById('invCurrency');
     if(nameEl && !nameEl.value && prof.name) nameEl.value = prof.name;
