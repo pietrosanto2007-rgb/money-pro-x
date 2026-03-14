@@ -1515,6 +1515,15 @@ function fmtShort(n){
   if(abs>=1000) return (UserConfig.currency||'€')+' '+(abs/1000).toFixed(1)+'k';
   return (UserConfig.currency||'€')+' '+abs.toLocaleString('it-IT',{minimumFractionDigits:0,maximumFractionDigits:0});
 }
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash |= 0;
+  }
+  return hash;
+}
 function td(){ return fmtDate(new Date()).replace(/-/g,''); }
 function download(blob, name){
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=name; a.click();
