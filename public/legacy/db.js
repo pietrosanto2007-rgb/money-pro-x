@@ -952,4 +952,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (id uuid DEFAULT gen_random_uuid() PRIM
 CREATE TABLE IF NOT EXISTS templates (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, name text NOT NULL, type text NOT NULL, amount numeric(12,2), category_key text, account_name text, description text, tags text DEFAULT '[]', created_at timestamptz DEFAULT now());
 CREATE TABLE IF NOT EXISTS notes (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, text text NOT NULL, done boolean DEFAULT false, date date NOT NULL, created_at timestamptz DEFAULT now());
 CREATE TABLE IF NOT EXISTS settings (key text PRIMARY KEY, value text, updated_at timestamptz DEFAULT now());
-CREATE TABLE IF NOT EXISTS investments (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, symbol text NOT NULL, name text, quantity numeric(20,8) NOT NULL, currency text, account_name text, buy_price numeric(12,4), include_in_total boolean DEFAULT true, note text, logo_url text, created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());`;
+CREATE TABLE IF NOT EXISTS investments (id uuid DEFAULT gen_random_uuid() PRIMARY KEY, symbol text NOT NULL, name text, quantity numeric(20,8) NOT NULL, currency text, account_name text, buy_price numeric(12,4), include_in_total boolean DEFAULT true, note text, logo_url text, created_at timestamptz DEFAULT now(), updated_at timestamptz DEFAULT now());
+
+-- Se stai aggiornando un database esistente (vecchie versioni), esegui anche:
+ALTER TABLE public.investments
+ADD COLUMN IF NOT EXISTS logo_url text;`;

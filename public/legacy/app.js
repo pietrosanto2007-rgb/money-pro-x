@@ -3553,41 +3553,42 @@ async function refreshInvestQuotes(force=false){
     const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
     const invs = (UserConfig.investments||[]).filter(i=>i.symbol && i.quantity>0);
     if(!invs.length) return;
-    if(!token){ console.warn('Twelve Data API key missing'); return; }
+    if(!token){ console.warn('EODHD API key missing'); return; }
 
     // Throttle: avoid refreshing more than once every 1 minute unless forced
     const now = Date.now();
     if(!force && AppState._lastQuoteRefresh && (now - AppState._lastQuoteRefresh < 60000)) return;
 
-    const symbols = [...new Set(invs.map(i=>String(i.symbol||'').toUpperCase()).filter(Boolean))];
+    const symbols = [...new Set(invs.map(i=>normEodSymbol(i.symbol)).filter(Boolean))];
     if(!symbols.length) return;
 
-    const url = twelvedataProxy('quote', { symbol: symbols.join(','), apikey: token });
-    const resp = await fetch(url);
-    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    if(data && data.code && data.code !== 200){ throw new Error(data.message || 'Twelve Data API error'); }
-
     const quotes = { ...(AppState.investQuotes||{}) };
-    // Twelve Data: 1 symbol = single object { close, name, currency }; multiple = { SYM1: {...}, "ENI:XMIL": {...} }
-    const parsePrice = (d)=>{ const p = d?.close ?? d?.price; const v = typeof p === 'number' ? p : parseFloat(p); return Number.isFinite(v) ? v : null; };
-    if(symbols.length === 1){
-      const s = symbols[0];
-      const price = parsePrice(data);
-      if(data && price != null){ quotes[s] = { price, at: now, raw: data }; }
-    } else {
-      for(const s of symbols){
-        const q = data[s];
-        const price = q ? parsePrice(q) : null;
-        if(price != null){ quotes[s] = { price, at: now, raw: q }; }
+    const parsePrice = (d)=>{ const p = d?.close ?? d?.price ?? d?.Close; const v = typeof p === 'number' ? p : parseFloat(p); return Number.isFinite(v) ? v : null; };
+
+    // EODHD real-time: fetch per symbol with small concurrency.
+    const concurrency = 3;
+    let idx = 0;
+    const workers = Array.from({length: Math.min(concurrency, symbols.length)}).map(async ()=>{
+      while(idx < symbols.length){
+        const s = symbols[idx++];
+        try{
+          const url = eodhdProxy('real-time', { symbol: s, api_token: token });
+          const resp = await fetch(url);
+          if(!resp.ok) continue;
+          const data = await resp.json();
+          if(!data || data.status === 'error' || data.error) continue;
+          const price = parsePrice(data);
+          if(price != null) quotes[s] = { price, at: now, raw: data };
+        }catch(e){}
       }
-    }
+    });
+    await Promise.all(workers);
 
     AppState.investQuotes = quotes;
     AppState._lastQuoteRefresh = now;
     renderAll('dash');
   }catch(e){
-    console.warn('Twelve Data refresh failure',e);
+    console.warn('EODHD refresh failure',e);
     if(force) toast('Errore aggiornamento prezzi','error');
   }
 }
@@ -3599,9 +3600,9 @@ async function addInvestment(){
   const accEl=document.getElementById('invAccount');
   const nameEl=document.getElementById('invName');
   const noteEl=document.getElementById('invNote');
-  const sym=(symEl?.value||'').trim().toUpperCase();
+  const sym=normEodSymbol((symEl?.value||''));
   const qty=parseFloat(qtyEl?.value||'0');
-  if(!sym){ toast('Inserisci il simbolo (es. AAPL)','warn'); return; }
+  if(!sym){ toast('Inserisci il simbolo (es. AAPL.US)','warn'); return; }
   if(!qty || qty<=0){ toast('Inserisci una quantità valida','error'); return; }
   const ok = await validateInvestSymbol(sym);
   if(!ok){
@@ -3739,9 +3740,21 @@ function saveInvestOnboard(){
   }catch(e){ toast('Errore nel salvataggio','error'); }
 }
 
-function twelvedataProxy(endpoint, params){
+function eodhdProxy(endpoint, params){
   const qs = new URLSearchParams({ endpoint, ...params });
-  return '/api/twelvedata?' + qs.toString();
+  return '/api/eodhd?' + qs.toString();
+}
+function normEodSymbol(input){
+  const raw = String(input||'').trim().toUpperCase();
+  if(!raw) return '';
+  // Support legacy style ENI:XMIL -> ENI.MI
+  if(raw.includes(':')){
+    const [sym, ex] = raw.split(':');
+    const exch = (ex||'').trim().toUpperCase();
+    if(exch === 'XMIL') return `${String(sym||'').trim().toUpperCase()}.MI`;
+    return String(sym||'').trim().toUpperCase();
+  }
+  return raw;
 }
 async function searchInvestSymbols(e){
   const input = e && e.target ? e.target : document.getElementById('invSymbol');
@@ -3760,15 +3773,15 @@ async function searchInvestSymbols(e){
   AppState.investSearch.query = q;
   
   const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
-  if(!token){ box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--bd)">Imposta la chiave API Twelve Data in Impostazioni.</div>'; box.classList.remove('hidden'); return; }
+  if(!token){ box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--bd)">Imposta la chiave API EOD Historical Data in Impostazioni.</div>'; box.classList.remove('hidden'); return; }
 
   try{
-    const url = twelvedataProxy('symbol_search', { symbol: q, apikey: token });
+    const url = eodhdProxy('search', { q, api_token: token });
     const resp = await fetch(url);
     if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    if(data && (data.status === 'error' || (data.code && data.code !== 200))){ throw new Error(data.message || data.error || 'Twelve Data API error'); }
-    const results = Array.isArray(data.data) ? data.data : [];
+    if(data && (data.status === 'error' || data.error)){ throw new Error(data.message || data.error || 'EOD Historical Data API error'); }
+    const results = Array.isArray(data) ? data : [];
     AppState.investSearch.results = results;
     if(!results.length){
       box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t3)">Nessun risultato.</div>';
@@ -3777,15 +3790,14 @@ async function searchInvestSymbols(e){
     }
 
     box.innerHTML = results.slice(0, 10).map(r => {
-      const sym = r.symbol;
-      const exch = r.exchange;
-      const fullSym = exch ? `${sym}:${exch}` : sym;
-      const desc = r.instrument_name || sym;
+      const fullSym = String(r.Code || r.code || '').toUpperCase();
+      const desc = r.Name || r.name || fullSym;
+      const exch = r.Exchange || r.exchange || '';
       
       return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${fullSym}', ${JSON.stringify(desc).replace(/"/g, '&quot;')})">
-        <div class="font-bold">${sym} <span class="text-[9px] opacity-70">(${exch})</span></div>
+        <div class="font-bold">${fullSym} <span class="text-[9px] opacity-70">${exch?('('+exch+')'):''}</span></div>
         <div style="color:var(--t2)">${desc}</div>
-        <div class="mt-0.5" style="color:var(--t3)">${[r.instrument_type,r.country].filter(Boolean).join(' · ') || '—'}</div>
+        <div class="mt-0.5" style="color:var(--t3)">${[r.Type||r.type, r.Country||r.country, r.Currency||r.currency].filter(Boolean).join(' · ') || '—'}</div>
       </button>`;
     }).join('');
     box.classList.remove('hidden');
@@ -3812,37 +3824,40 @@ function selectInvestSymbol(sym, desc){
 }
 
 async function validateInvestSymbol(sym){
-  const s = (sym||'').trim().toUpperCase();
+  const s = normEodSymbol(sym);
   if(!s) return false;
   const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
   if(!token) return true;
   try{
-    const url = twelvedataProxy('symbol_search', { symbol: s.split(':')[0], apikey: token });
+    // If user already provided a fully-qualified code (e.g., ENI.MI, AAPL.US), accept it.
+    if(s.includes('.')) return true;
+    const url = eodhdProxy('search', { q: s, api_token: token });
     const resp = await fetch(url);
     const data = await resp.json();
-    const results = Array.isArray(data.data) ? data.data : [];
-    const match = (r)=> (r.exchange ? `${r.symbol}:${r.exchange}` : r.symbol) === s || r.symbol === s;
-    return results.some(match);
+    if(data && (data.status === 'error' || data.error)) return false;
+    const results = Array.isArray(data) ? data : [];
+    return results.some(r => String(r.Code||r.code||'').toUpperCase() === s);
   }catch(e){ return false; }
 }
 
 async function fetchInvestProfile(sym){
-  const symbol = (sym||'').trim().toUpperCase();
+  const symbol = normEodSymbol(sym);
   if(!symbol) return;
   const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
   if(!token) return;
   try{
-    const url = twelvedataProxy('quote', { symbol: symbol, apikey: token });
+    const url = eodhdProxy('real-time', { symbol, api_token: token });
     const resp = await fetch(url);
     if(!resp.ok) return;
     const data = await resp.json();
-    if(!data || !data.symbol) return;
+    if(!data || data.status === 'error' || data.error) return;
     
     AppState.investProfiles = AppState.investProfiles || {};
     const prof = {
-      name: data.name || symbol,
-      currency: data.currency || '',
-      logoUrl: `https://api.twelvedata.com/logo?symbol=${encodeURIComponent(symbol.split(':')[0])}&apikey=${encodeURIComponent(token)}`,
+      name: data.name || data.Name || symbol,
+      currency: data.currency || data.Currency || '',
+      // EODHD does not provide logos in base endpoints; keep empty.
+      logoUrl: '',
     };
     AppState.investProfiles[symbol] = prof;
     
