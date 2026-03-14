@@ -1338,7 +1338,7 @@ function updateDash(){
   // Patrimonio netto (conti) = somma di tutti i saldi dei conti
   const totalNet=Object.values(wB).reduce((s,v)=>s+v,0);
 
-  // Investimenti: valore corrente calcolato dalle quote in AppState.investQuotes
+  // Investimenti: valore corrente (convertito in valuta principale)
   let investValue=0;
   try{
     const invs=UserConfig.investments||[];
@@ -1350,7 +1350,10 @@ function updateDash(){
       const price=q && typeof q.price==='number' ? q.price : null;
       if(!price) return;
       const qty=+inv.quantity||0;
-      if(qty>0) investValue+=price*qty;
+      if(qty<=0) return;
+      const valInInvCurr=price*qty;
+      const invCurr=(inv.currency||'EUR').toUpperCase();
+      investValue+=convertToMainCurrency(valInInvCurr,invCurr);
     });
   }catch(e){}
 
@@ -3498,6 +3501,23 @@ function openSubsM(){
 /* ============================================================
    INVESTIMENTI
 ============================================================ */
+function getMainCurrencyCode(){
+  const s=String(UserConfig.currency||'€').trim();
+  if(s==='$') return 'USD';
+  if(s==='£') return 'GBP';
+  if(s==='CHF'||s==='Fr') return 'CHF';
+  return 'EUR';
+}
+function convertToMainCurrency(amount, fromCode){
+  if(!amount||!Number.isFinite(amount)) return 0;
+  const from=String(fromCode||'').toUpperCase().trim()||'EUR';
+  const main=getMainCurrencyCode();
+  if(from===main) return amount;
+  const fx=UserConfig.fx||{EUR:1,USD:1.08,GBP:0.86,JPY:163,CHF:0.96,CAD:1.47};
+  const fromRate=Number(fx[from])||1;
+  const mainRate=Number(fx[main])||1;
+  return (amount/fromRate)*mainRate;
+}
 function computeInvestSummary(){
   const invs=UserConfig.investments||[];
   const quotes=AppState.investQuotes||{};
@@ -3506,12 +3526,13 @@ function computeInvestSummary(){
   invs.forEach(inv=>{
     const qty=+inv.quantity||0;
     if(!qty) return;
+    const invCurr=(inv.currency||'EUR').toUpperCase();
     const buy=inv.buyPrice!=null?+inv.buyPrice:0;
-    if(buy>0) totalCost+=buy*qty;
+    if(buy>0) totalCost+=convertToMainCurrency(buy*qty,invCurr);
     const sym=(inv.symbol||'').toUpperCase();
     const q=quotes[sym];
     const price=q && typeof q.price==='number'?q.price:0;
-    if(price>0) totalValue+=price*qty;
+    if(price>0) totalValue+=convertToMainCurrency(price*qty,invCurr);
   });
   const pnl=totalValue-totalCost;
   return { totalValue, totalCost, pnl };
@@ -3661,12 +3682,15 @@ function renderInvestList(){
   }
   el.innerHTML=invs.map(inv=>{
     const sym=(inv.symbol||'').toUpperCase();
+    const invCurr=(inv.currency||'EUR').toUpperCase();
     const q=quotes[sym];
     const price=q && typeof q.price==='number'?q.price:null;
     const qty=+inv.quantity||0;
-    const val=price?price*qty:0;
+    const valRaw=price?price*qty:0;
     const buy=inv.buyPrice!=null?+inv.buyPrice:0;
-    const cost=buy>0?buy*qty:0;
+    const costRaw=buy>0?buy*qty:0;
+    const val=convertToMainCurrency(valRaw,invCurr);
+    const cost=convertToMainCurrency(costRaw,invCurr);
     const pnlRow=val-cost;
     const colRow=pnlRow>=0?'var(--ok)':'var(--bd)';
     return `<div class="flex items-center justify-between gap-3 p-3 rounded-2xl" style="background:var(--bg2)">
@@ -3677,12 +3701,12 @@ function renderInvestList(){
           </div>
           <div class="min-w-0">
             <p class="text-sm font-bold truncate">${inv.name||sym}</p>
-            <p class="text-[10px]" style="color:var(--t2)">${qty} · ${buy?('Costo medio '+fmt(buy)):''}</p>
+            <p class="text-[10px]" style="color:var(--t2)">${qty} · ${buy?('Costo medio '+fmt(convertToMainCurrency(buy,invCurr))):''}</p>
           </div>
         </div>
       </div>
       <div class="text-right text-xs">
-        <p class="font-bold" style="color:${price?'var(--t)': 'var(--t3)'}">${price?fmt(price):'—'}</p>
+        <p class="font-bold" style="color:${price?'var(--t)': 'var(--t3)'}">${price?fmt(convertToMainCurrency(price,invCurr)):'—'}</p>
         <p class="font-black" style="color:${colRow}">${price?fmt(val):'—'}</p>
         ${price?`<p class="text-[10px]" style="color:${colRow}">${pnlRow>=0?'+':''}${fmt(pnlRow)}</p>`:''}
       </div>
@@ -3759,7 +3783,19 @@ async function searchInvestSymbols(e){
     AppState.investSearch.results = [];
     return;
   }
-  if(q === AppState.investSearch.query) return;
+  const results = AppState.investSearch.results || [];
+  if(q === AppState.investSearch.query){
+    if(results.length){
+      box.innerHTML = results.slice(0,10).map(r=>{
+        const fullSym = String(r.symbol||'').toUpperCase();
+        const desc = r.shortname||r.longname||r.name||fullSym;
+        const exch = r.exchDisp||r.exchange||'';
+        return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${fullSym}', ${JSON.stringify(desc).replace(/"/g,'&quot;')})"><div class="font-bold">${fullSym} <span class="text-[9px] opacity-70">${exch?'('+exch+')':''}</span></div><div style="color:var(--t2)">${desc}</div><div class="mt-0.5" style="color:var(--t3)">${[r.quoteType,r.currency].filter(Boolean).join(' · ')||'—'}</div></button>`;
+      }).join('');
+      box.classList.remove('hidden');
+    }
+    return;
+  }
   AppState.investSearch.query = q;
   
   try{
@@ -3845,7 +3881,7 @@ async function fetchInvestProfile(sym){
     const nameEl = document.getElementById('invName');
     const curEl  = document.getElementById('invCurrency');
     if(nameEl && !nameEl.value && prof.name) nameEl.value = prof.name;
-    if(curEl && !curEl.value && prof.currency) curEl.value = prof.currency;
+    if(curEl && prof.currency) curEl.value = prof.currency;
   }catch(e){
     console.warn('invest.profile',e);
   }
