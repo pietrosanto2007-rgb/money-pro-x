@@ -611,15 +611,13 @@ async function init(){
   if(typeof UserConfig.investIncludeInTotal!=='boolean') UserConfig.investIncludeInTotal=true;
   if(!UserConfig.investApi)     UserConfig.investApi={provider:'finnhub',apiKey:''};
 
-  // 0. Auto-refresh investments on load
-  if((UserConfig.investments||[]).length > 0) {
-    refreshInvestQuotes().catch(()=>{});
-  }
+  // 0. Auto-refresh investments on load (REMOVED: moved later to ensure data is loaded first)
 
   // Prefer per-entity caches (newer than snapshot in mpxCfg2)
   try{ const subs=JSON.parse(localStorage.getItem('mpx_subscriptions')||'null'); if(subs?.length) UserConfig.subscriptions=subs; }catch(e){}
   try{ const debts=JSON.parse(localStorage.getItem('mpx_debts')||'null'); if(debts?.length) UserConfig.debts=debts; }catch(e){}
   try{ const goals=JSON.parse(localStorage.getItem('mpx_goals')||'null'); if(goals?.length) UserConfig.goals=goals; }catch(e){}
+  try{ const invs=JSON.parse(localStorage.getItem('mpx_investments')||'null'); if(invs?.length) UserConfig.investments=invs; }catch(e){}
   // One-time backfill for users coming from older versions
   if(localStorage.getItem('mpx_subscriptions')==null && UserConfig.subscriptions?.length) localStorage.setItem('mpx_subscriptions',JSON.stringify(UserConfig.subscriptions));
   if(localStorage.getItem('mpx_debts')==null && UserConfig.debts?.length) localStorage.setItem('mpx_debts',JSON.stringify(UserConfig.debts));
@@ -628,6 +626,7 @@ async function init(){
   try{ UserConfig.subscriptions=(UserConfig.subscriptions||[]).map(s=>({...(s||{}),id:normId(s.id)})); }catch(e){}
   try{ UserConfig.debts=(UserConfig.debts||[]).map(d=>({...(d||{}),id:normId(d.id)})); }catch(e){}
   try{ UserConfig.goals=(UserConfig.goals||[]).map(g=>({...(g||{}),id:normId(g.id)})); }catch(e){}
+  try{ UserConfig.investments=(UserConfig.investments||[]).map(inv=>({...(inv||{}),id:normId(inv.id)})); }catch(e){}
 
   // 2. Tema e colore immediati
   applyTheme();
@@ -654,6 +653,11 @@ async function init(){
 
   // 4b. Carica investimenti da DB/localStorage
   try{ await DatabaseService.loadInvestments(); }catch(e){}
+  
+  // Auto-refresh investments quotes after loading data
+  if((UserConfig.investments||[]).length > 0) {
+    refreshInvestQuotes().catch(()=>{});
+  }
 
   // Onboarding investimenti (API mercato) — facoltativo
   try{
@@ -1031,8 +1035,14 @@ function renderIconPicker(){
   // Fintech brands section
   html+=`<div style="grid-column:1/-1;font-size:8px;font-weight:800;color:var(--br);text-transform:uppercase;letter-spacing:.06em;padding:2px 0 4px">Fintech</div>`;
   Object.entries(FINTECH_BRANDS).forEach(([key,b])=>{
+    let previewHtml = '';
+    if (b.localIcon) {
+      previewHtml = `<div class="icon-preview ft-badge" style="background:white;padding:2px;border:1px solid var(--bo)"><img src="${b.localIcon}" alt="${b.label}" style="width:100%;height:100%;object-fit:contain;border-radius:4px"></div>`;
+    } else {
+      previewHtml = `<div class="icon-preview ft-badge" style="background:${b.bg};font-size:10px">${b.text}</div>`;
+    }
     html+=`<button type="button" class="icon-pick-btn ${curIcon==='ft:'+key?'selected':''}" onclick="selectAccIcon('ft:${key}',this)" title="${b.label}">
-      <div class="icon-preview ft-badge" style="background:${b.bg};font-size:10px">${b.text}</div>
+      ${previewHtml}
       <span>${b.label.split(' ')[0]}</span>
     </button>`;
   });
@@ -3658,13 +3668,13 @@ async function addInvestment(){
     if(symEl) symEl.value='';
     if(nameEl) nameEl.value='';
     if(qtyEl) qtyEl.value='';
-    if(buyEl) buyEl.value='';
     if(noteEl) noteEl.value='';
   }catch(e){}
   try{ localStorage.setItem('mpx_investments',JSON.stringify(UserConfig.investments||[])); }catch(e){}
   toast('Investimento salvato ✓','success');
   await refreshInvestQuotes();
   renderInvestList();
+  renderAll('dash');
 }
 async function deleteInvestment(id){
   await DatabaseService.deleteInvestment(id);
@@ -3811,7 +3821,7 @@ async function searchInvestSymbols(e){
       const desc = r.description || '';
       const exch = r.exchange || '';
       const meta = [exch,r.type].filter(Boolean).join(' · ');
-      return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${sym.replace(/'/g,'\\\'')}', ${JSON.stringify(desc)})">
+      return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${sym.replace(/'/g,'\\\'')}', ${JSON.stringify(desc).replace(/"/g, '&quot;')})">
         <div class="font-bold">${sym}</div>
         <div style="color:var(--t2)">${desc||'-'}</div>
         ${meta?`<div class="mt-0.5" style="color:var(--t3)">${meta}</div>`:''}
