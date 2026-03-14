@@ -3562,8 +3562,7 @@ async function refreshInvestQuotes(force=false){
     const symbols = [...new Set(invs.map(i=>String(i.symbol||'').toUpperCase()).filter(Boolean))];
     if(!symbols.length) return;
 
-    // Twelve Data batch quote: symbols=SYM1,SYM2...
-    const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbols.join(','))}&apikey=${encodeURIComponent(token)}`;
+    const url = twelvedataProxy('quote', { symbol: symbols.join(','), apikey: token });
     const resp = await fetch(url);
     if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
@@ -3740,6 +3739,10 @@ function saveInvestOnboard(){
   }catch(e){ toast('Errore nel salvataggio','error'); }
 }
 
+function twelvedataProxy(endpoint, params){
+  const qs = new URLSearchParams({ endpoint, ...params });
+  return '/api/twelvedata?' + qs.toString();
+}
 async function searchInvestSymbols(e){
   const input = e && e.target ? e.target : document.getElementById('invSymbol');
   const box = document.getElementById('invSymbolSuggest');
@@ -3757,17 +3760,16 @@ async function searchInvestSymbols(e){
   AppState.investSearch.query = q;
   
   const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
-  if(!token) return;
+  if(!token){ box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--bd)">Imposta la chiave API Twelve Data in Impostazioni.</div>'; box.classList.remove('hidden'); return; }
 
   try{
-    // Twelve Data search
-    const url = `https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(q)}&apikey=${encodeURIComponent(token)}`;
+    const url = twelvedataProxy('symbol_search', { symbol: q, apikey: token });
     const resp = await fetch(url);
     if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
+    if(data && (data.status === 'error' || (data.code && data.code !== 200))){ throw new Error(data.message || data.error || 'Twelve Data API error'); }
     const results = Array.isArray(data.data) ? data.data : [];
     AppState.investSearch.results = results;
-
     if(!results.length){
       box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t3)">Nessun risultato.</div>';
       box.classList.remove('hidden');
@@ -3783,13 +3785,14 @@ async function searchInvestSymbols(e){
       return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${fullSym}', ${JSON.stringify(desc).replace(/"/g, '&quot;')})">
         <div class="font-bold">${sym} <span class="text-[9px] opacity-70">(${exch})</span></div>
         <div style="color:var(--t2)">${desc}</div>
-        <div class="mt-0.5" style="color:var(--t3)">${r.instrument_type} · ${r.country}</div>
+        <div class="mt-0.5" style="color:var(--t3)">${[r.instrument_type,r.country].filter(Boolean).join(' · ') || '—'}</div>
       </button>`;
     }).join('');
     box.classList.remove('hidden');
   }catch(err){
     console.warn('invest.search',err);
-    box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--bd)">Errore nella ricerca simboli.</div>';
+    const msg = (err && err.message) ? err.message : 'Errore nella ricerca';
+    box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--bd)">' + (msg.includes('Invalid')||msg.includes('401') ? 'Chiave API non valida.' : msg.includes('429')||msg.includes('limit') ? 'Limite richieste superato. Riprova più tardi.' : 'Errore: ' + String(msg)) + '</div>';
     box.classList.remove('hidden');
   }
 }
@@ -3814,7 +3817,7 @@ async function validateInvestSymbol(sym){
   const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
   if(!token) return true;
   try{
-    const url = `https://api.twelvedata.com/symbol_search?symbol=${encodeURIComponent(s.split(':')[0])}&apikey=${encodeURIComponent(token)}`;
+    const url = twelvedataProxy('symbol_search', { symbol: s.split(':')[0], apikey: token });
     const resp = await fetch(url);
     const data = await resp.json();
     const results = Array.isArray(data.data) ? data.data : [];
@@ -3829,8 +3832,7 @@ async function fetchInvestProfile(sym){
   const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
   if(!token) return;
   try{
-    // Twelve Data quote also returns company name and currency
-    const url = `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(symbol)}&apikey=${encodeURIComponent(token)}`;
+    const url = twelvedataProxy('quote', { symbol: symbol, apikey: token });
     const resp = await fetch(url);
     if(!resp.ok) return;
     const data = await resp.json();
