@@ -541,7 +541,7 @@ async function init(){
   if(!UserConfig.goals)         UserConfig.goals=[];
   if(!UserConfig.investments)   UserConfig.investments=[];
   if(typeof UserConfig.investIncludeInTotal!=='boolean') UserConfig.investIncludeInTotal=true;
-  if(!UserConfig.investApi)     UserConfig.investApi={apiKey:''};
+  if(!UserConfig.investApi)     UserConfig.investApi={apiKey:''}; // legacy (unused with Yahoo)
 
   // 0. Auto-refresh investments on load (REMOVED: moved later to ensure data is loaded first)
 
@@ -1081,10 +1081,8 @@ function applyLayouts(){
   });
   
   // Sync Investment Settings UI
-  if(UserConfig.investApi){
-    const inpKey = document.getElementById('setInvApiKey');
+  {
     const chkInc = document.getElementById('setInvInclude');
-    if(inpKey) inpKey.value = UserConfig.investApi.apiKey || '';
     if(chkInc) chkInc.checked = UserConfig.investIncludeInTotal !== false;
   }
 }
@@ -2287,12 +2285,9 @@ function saveSettings(){
   UserConfig.goalName = document.getElementById('gNameI')?.value||'';
   UserConfig.goalVal  = document.getElementById('gValI')?.value||'';
 
-  const invKey = document.getElementById('setInvApiKey')?.value || '';
   const invInc = document.getElementById('setInvInclude')?.checked !== false;
 
-  UserConfig.investApi = { apiKey: invKey };
   UserConfig.investIncludeInTotal = invInc;
-  localStorage.setItem('mpxInvestApiKey', invKey);
 
   saveConfig(); 
 }
@@ -3549,46 +3544,44 @@ function renderInvestMini(currentValue, effectiveNet){
 }
 async function refreshInvestQuotes(force=false){
   try{
-    const api = UserConfig.investApi||{};
-    const token = api.apiKey || localStorage.getItem('mpxInvestApiKey') || '';
     const invs = (UserConfig.investments||[]).filter(i=>i.symbol && i.quantity>0);
     if(!invs.length) return;
-    if(!token){ console.warn('EODHD API key missing'); return; }
 
     // Throttle: avoid refreshing more than once every 1 minute unless forced
     const now = Date.now();
     if(!force && AppState._lastQuoteRefresh && (now - AppState._lastQuoteRefresh < 60000)) return;
 
-    const symbols = [...new Set(invs.map(i=>normEodSymbol(i.symbol)).filter(Boolean))];
+    const symbols = [...new Set(invs.map(i=>normYahooSymbol(i.symbol)).filter(Boolean))];
     if(!symbols.length) return;
 
     const quotes = { ...(AppState.investQuotes||{}) };
-    const parsePrice = (d)=>{ const p = d?.close ?? d?.price ?? d?.Close; const v = typeof p === 'number' ? p : parseFloat(p); return Number.isFinite(v) ? v : null; };
-
-    // EODHD real-time: fetch per symbol with small concurrency.
-    const concurrency = 3;
-    let idx = 0;
-    const workers = Array.from({length: Math.min(concurrency, symbols.length)}).map(async ()=>{
-      while(idx < symbols.length){
-        const s = symbols[idx++];
-        try{
-          const url = eodhdProxy('real-time', { symbol: s, api_token: token });
-          const resp = await fetch(url);
-          if(!resp.ok) continue;
-          const data = await resp.json();
-          if(!data || data.status === 'error' || data.error) continue;
-          const price = parsePrice(data);
-          if(price != null) quotes[s] = { price, at: now, raw: data };
-        }catch(e){}
+    const url = yahooProxy('quote', { symbols: symbols.join(',') });
+    const resp = await fetch(url);
+    if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    const results = data?.quoteResponse?.result;
+    if(!Array.isArray(results)) throw new Error('Yahoo quoteResponse non valido');
+    for(const r of results){
+      const sym = String(r?.symbol||'').toUpperCase();
+      const price = typeof r?.regularMarketPrice === 'number' ? r.regularMarketPrice : null;
+      if(sym && price != null) quotes[sym] = { price, at: now, raw: r };
+      // opportunistic profile cache
+      if(sym){
+        AppState.investProfiles = AppState.investProfiles || {};
+        const prof = AppState.investProfiles[sym] || {};
+        AppState.investProfiles[sym] = {
+          name: prof.name || r.shortName || r.longName || sym,
+          currency: prof.currency || r.currency || '',
+          logoUrl: prof.logoUrl || '',
+        };
       }
-    });
-    await Promise.all(workers);
+    }
 
     AppState.investQuotes = quotes;
     AppState._lastQuoteRefresh = now;
     renderAll('dash');
   }catch(e){
-    console.warn('EODHD refresh failure',e);
+    console.warn('Yahoo refresh failure',e);
     if(force) toast('Errore aggiornamento prezzi','error');
   }
 }
@@ -3600,9 +3593,9 @@ async function addInvestment(){
   const accEl=document.getElementById('invAccount');
   const nameEl=document.getElementById('invName');
   const noteEl=document.getElementById('invNote');
-  const sym=normEodSymbol((symEl?.value||''));
+  const sym=normYahooSymbol((symEl?.value||''));
   const qty=parseFloat(qtyEl?.value||'0');
-  if(!sym){ toast('Inserisci il simbolo (es. AAPL.US)','warn'); return; }
+  if(!sym){ toast('Inserisci il simbolo (es. AAPL, ENI.MI)','warn'); return; }
   if(!qty || qty<=0){ toast('Inserisci una quantità valida','error'); return; }
   const ok = await validateInvestSymbol(sym);
   if(!ok){
@@ -3708,10 +3701,7 @@ function openInvestM(){
 }
 function openInvestOnboard(){
   try{
-    const keyInp=document.getElementById('invApiKeyInp');
     const toggle=document.getElementById('invIncludeToggle');
-    const api=UserConfig.investApi||{};
-    if(keyInp) keyInp.value=api.apiKey||localStorage.getItem('mpxInvestApiKey')||'';
     if(toggle) toggle.checked=UserConfig.investIncludeInTotal!==false;
   }catch(e){}
   openModal('investOnboardM');
@@ -3721,16 +3711,9 @@ function skipInvestOnboard(){
   closeAll(true);
 }
 function saveInvestOnboard(){
-  const key=(document.getElementById('invApiKeyInp')?.value||'').trim();
   const include=document.getElementById('invIncludeToggle')?.checked!==false;
-  if(!key){
-    toast('Inserisci una API key valida','error');
-    return;
-  }
   try{
-    localStorage.setItem('mpxInvestApiKey',key);
     localStorage.setItem('mpxInvestOnboardDone','1');
-    UserConfig.investApi={apiKey:key};
     UserConfig.investIncludeInTotal=include;
     DatabaseService.pushSettings();
     toast('Configurazione completata! ✓','success');
@@ -3740,26 +3723,21 @@ function saveInvestOnboard(){
   }catch(e){ toast('Errore nel salvataggio','error'); }
 }
 
-function eodhdProxy(endpoint, params){
+function yahooProxy(endpoint, params){
   const qs = new URLSearchParams({ endpoint, ...params });
-  return '/api/eodhd?' + qs.toString();
+  return '/api/yahoo?' + qs.toString();
 }
-function normEodSymbol(input){
+function normYahooSymbol(input){
   const raw = String(input||'').trim().toUpperCase();
   if(!raw) return '';
-  // Support legacy style ENI:XMIL -> ENI.MI
+  // Support legacy style ENI:XMIL -> ENI.MI (Yahoo uses .MI)
   if(raw.includes(':')){
     const [sym, ex] = raw.split(':');
     const exch = (ex||'').trim().toUpperCase();
     if(exch === 'XMIL') return `${String(sym||'').trim().toUpperCase()}.MI`;
     return String(sym||'').trim().toUpperCase();
   }
-  // If user types a bare ticker (e.g. "AAPL"), default to US exchange.
-  if(!raw.includes('.')){
-    const bare = raw.replace(/\s+/g,'');
-    if(/^[A-Z0-9]{1,10}$/.test(bare)) return `${bare}.US`;
-  }
-  return raw;
+  return raw.replace(/\s+/g,'');
 }
 async function searchInvestSymbols(e){
   const input = e && e.target ? e.target : document.getElementById('invSymbol');
@@ -3777,16 +3755,12 @@ async function searchInvestSymbols(e){
   if(q === AppState.investSearch.query) return;
   AppState.investSearch.query = q;
   
-  const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
-  if(!token){ box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--bd)">Imposta la chiave API EOD Historical Data in Impostazioni.</div>'; box.classList.remove('hidden'); return; }
-
   try{
-    const url = eodhdProxy('search', { q, api_token: token });
+    const url = yahooProxy('search', { q, quotesCount:'10', newsCount:'0', enableFuzzyQuery:'true' });
     const resp = await fetch(url);
     if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
-    if(data && (data.status === 'error' || data.error)){ throw new Error(data.message || data.error || 'EOD Historical Data API error'); }
-    const results = Array.isArray(data) ? data : [];
+    const results = Array.isArray(data?.quotes) ? data.quotes : [];
     AppState.investSearch.results = results;
     if(!results.length){
       box.innerHTML = '<div class="px-3 py-2 text-[10px]" style="color:var(--t3)">Nessun risultato.</div>';
@@ -3795,14 +3769,14 @@ async function searchInvestSymbols(e){
     }
 
     box.innerHTML = results.slice(0, 10).map(r => {
-      const fullSym = String(r.Code || r.code || '').toUpperCase();
-      const desc = r.Name || r.name || fullSym;
-      const exch = r.Exchange || r.exchange || '';
+      const fullSym = String(r.symbol || '').toUpperCase();
+      const desc = r.shortname || r.longname || r.name || fullSym;
+      const exch = r.exchDisp || r.exchange || '';
       
       return `<button type="button" class="w-full text-left px-3 py-2 text-[11px] hover:bg-[var(--bg2)]" onmousedown="selectInvestSymbol('${fullSym}', ${JSON.stringify(desc).replace(/"/g, '&quot;')})">
         <div class="font-bold">${fullSym} <span class="text-[9px] opacity-70">${exch?('('+exch+')'):''}</span></div>
         <div style="color:var(--t2)">${desc}</div>
-        <div class="mt-0.5" style="color:var(--t3)">${[r.Type||r.type, r.Country||r.country, r.Currency||r.currency].filter(Boolean).join(' · ') || '—'}</div>
+        <div class="mt-0.5" style="color:var(--t3)">${[r.quoteType, r.currency].filter(Boolean).join(' · ') || '—'}</div>
       </button>`;
     }).join('');
     box.classList.remove('hidden');
@@ -3829,39 +3803,34 @@ function selectInvestSymbol(sym, desc){
 }
 
 async function validateInvestSymbol(sym){
-  const s = normEodSymbol(sym);
+  const s = normYahooSymbol(sym);
   if(!s) return false;
-  const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
-  if(!token) return true;
   try{
-    // If user already provided a fully-qualified code (e.g., ENI.MI, AAPL.US), accept it.
-    if(s.includes('.')) return true;
-    const url = eodhdProxy('search', { q: s, api_token: token });
+    const url = yahooProxy('quote', { symbols: s });
     const resp = await fetch(url);
+    if(!resp.ok) return false;
     const data = await resp.json();
-    if(data && (data.status === 'error' || data.error)) return false;
-    const results = Array.isArray(data) ? data : [];
-    return results.some(r => String(r.Code||r.code||'').toUpperCase() === s);
+    const results = data?.quoteResponse?.result;
+    if(!Array.isArray(results) || !results.length) return false;
+    return results.some(r => String(r?.symbol||'').toUpperCase() === s && typeof r?.regularMarketPrice === 'number');
   }catch(e){ return false; }
 }
 
 async function fetchInvestProfile(sym){
-  const symbol = normEodSymbol(sym);
+  const symbol = normYahooSymbol(sym);
   if(!symbol) return;
-  const token = (UserConfig.investApi||{}).apiKey || localStorage.getItem('mpxInvestApiKey') || '';
-  if(!token) return;
   try{
-    const url = eodhdProxy('real-time', { symbol, api_token: token });
+    const url = yahooProxy('quote', { symbols: symbol });
     const resp = await fetch(url);
     if(!resp.ok) return;
     const data = await resp.json();
-    if(!data || data.status === 'error' || data.error) return;
+    const r = data?.quoteResponse?.result?.[0];
+    if(!r) return;
     
     AppState.investProfiles = AppState.investProfiles || {};
     const prof = {
-      name: data.name || data.Name || symbol,
-      currency: data.currency || data.Currency || '',
-      // EODHD does not provide logos in base endpoints; keep empty.
+      name: r.shortName || r.longName || symbol,
+      currency: r.currency || '',
       logoUrl: '',
     };
     AppState.investProfiles[symbol] = prof;

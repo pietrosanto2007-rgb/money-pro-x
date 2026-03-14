@@ -230,20 +230,18 @@
   </div>
   <div class="flex-1 overflow-y-auto px-5 pb-6 ns space-y-4">
     <div class="card p-4 space-y-2" style="background:var(--bg2); border:none">
-      <p class="text-sm font-bold">Collega EOD Historical Data API</p>
-      <p class="text-xs" style="color:var(--t2)">Ottieni dati per azioni globali e italiane (Borsa di Milano). Inserisci la tua API Key di EOD Historical Data. Puoi saltare questo passaggio e configurarlo più tardi.</p>
+      <p class="text-sm font-bold">Attiva quotazioni con Yahoo Finance</p>
+      <p class="text-xs" style="color:var(--t2)">Le quotazioni vengono recuperate automaticamente da Yahoo Finance. Non serve alcuna API Key. Puoi comunque scegliere se includere o meno gli investimenti nel Patrimonio Netto.</p>
     </div>
-    <div>
-      <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Chiave API EOD Historical Data</label>
-      <input type="text" id="invApiKeyInp" class="inp text-sm" placeholder="Es. 8382ab..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-family:monospace">
-      <p class="text-[9px] mt-1" style="color:var(--t3)">Simboli azioni italiane: es. ENI.MI, A2A.MI</p>
+    <div class="rounded-xl px-3 py-2.5" style="background:var(--bg2)">
+      <p class="text-[9px]" style="color:var(--t3)">Simboli azioni italiane: es. ENI.MI, A2A.MI · USA: es. AAPL</p>
     </div>
     <div class="flex items-center justify-between rounded-xl px-3 py-2.5" style="background:var(--bg2)">
       <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Somma al Patrimonio Netto</span>
       <label class="tog"><input type="checkbox" id="invIncludeToggle" checked><span class="tog-sl"></span></label>
     </div>
     <button onclick="saveInvestOnboard()" class="gbtn w-full py-3 rounded-xl text-sm flex justify-center items-center gap-2">
-      <i data-lucide="trending-up" class="w-4 h-4"></i>Salva API investimenti
+      <i data-lucide="trending-up" class="w-4 h-4"></i>Attiva investimenti
     </button>
     <button onclick="skipInvestOnboard()" class="w-full py-2 rounded-xl text-xs font-bold" style="background:var(--bg2);color:var(--t2)">Salta per ora</button>
   </div>
@@ -918,10 +916,9 @@
   <div class="card p-5 space-y-3" style="border-color:rgba(0,102,255,.2)">
     <h3 class="text-[10px] font-black uppercase tracking-widest" style="color:var(--br)">Mercati & Investimenti</h3>
     <div class="space-y-4">
-      <div>
-        <label class="text-[10px] font-bold uppercase tracking-wider block mb-1.5" style="color:var(--t2)">Chiave API EOD Historical Data</label>
-        <input type="text" id="setInvApiKey" class="inp text-sm" placeholder="Inserisci chiave API..." oninput="saveSettings()" style="font-family:monospace">
-        <p class="text-[9px] mt-1" style="color:var(--t3)">Simboli azioni italiane: es. ENI.MI</p>
+      <div class="rounded-xl px-3 py-2.5" style="background:var(--bg2)">
+        <p class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Provider quotazioni</p>
+        <p class="text-[9px] mt-1" style="color:var(--t3)">Yahoo Finance (automatico) · Esempi: ENI.MI, A2A.MI, AAPL</p>
       </div>
       <div class="flex items-center justify-between rounded-xl px-3 py-2.5" style="background:var(--bg2)">
         <span class="text-[10px] font-bold uppercase tracking-wider" style="color:var(--t2)">Includi nel Patrimonio Netto</span>
