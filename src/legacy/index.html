@@ -1429,72 +1429,7 @@ let CFG={
 /* ============================================================
    FINTECH & ACCOUNT ICON SYSTEM
 ============================================================ */
-// Fintech brand icons: { key: {label, bg, fg, text, emoji} }
-const FINTECH_BRANDS = {
-  paypal:    {label:'PayPal',    bg:'#003087',fg:'#009cde',text:'PP',  emoji:'🅿'},
-  hype:      {label:'Hype',     bg:'#6B21A8',fg:'#A855F7',text:'HY',  emoji:'💜'},
-  revolut:   {label:'Revolut',  bg:'#191C1F',fg:'#FF6B35',text:'RV',  emoji:'🔶'},
-  satispay:  {label:'Satispay', bg:'#E4002B',fg:'#FF4461',text:'S',   emoji:'🔴'},
-  n26:       {label:'N26',      bg:'#1A1A1A',fg:'#00B2A9',text:'N26', emoji:'🏦'},
-  postepay:  {label:'Postepay', bg:'#F7941D',fg:'#FFC342',text:'PP',  emoji:'🟠'},
-  wise:      {label:'Wise',     bg:'#9FE870',fg:'#163300',text:'W',   emoji:'💚'},
-  monzo:     {label:'Monzo',    bg:'#FF3464',fg:'#FFD4E0',text:'M',   emoji:'🌸'},
-  bunq:      {label:'bunq',     bg:'#00A86B',fg:'#E8FFF4',text:'bq',  emoji:'🟢'},
-  tinaba:    {label:'Tinaba',   bg:'#FF6600',fg:'#fff',   text:'Ti',  emoji:'🟠'},
-  illimity:  {label:'illimity', bg:'#1B3A6B',fg:'#5AB4FF',text:'Il',  emoji:'🔵'},
-  buddybank: {label:'Buddybank',bg:'#FF5F1F',fg:'#fff',   text:'BB',  emoji:'🟠'},
-  fineco:    {label:'FinecoBank',bg:'#005BAC',fg:'#fff',  text:'FN',  emoji:'🔵'},
-  mediolanum:{label:'Mediolanum',bg:'#00A86B',fg:'#fff',  text:'MD',  emoji:'🟢'},
-  unicredit: {label:'UniCredit',bg:'#E3000F',fg:'#fff',   text:'UC',  emoji:'🔴'},
-  intesa:    {label:'Intesa SP',bg:'#008751',fg:'#fff',   text:'IS',  emoji:'🟢'},
-  bnl:       {label:'BNL',      bg:'#004A97',fg:'#fff',   text:'BNL', emoji:'🔵'},
-  mps:       {label:'Monte Paschi',bg:'#00294D',fg:'#D4AF37',text:'MPS',emoji:'🏦'},
-};
-
-// Generic account icons (lucide icon name → display label)
-const GENERIC_ACC_ICONS = [
-  {ic:'credit-card', label:'Carta'},
-  {ic:'wallet',      label:'Wallet'},
-  {ic:'banknote',    label:'Cash'},
-  {ic:'piggy-bank',  label:'Risparmi'},
-  {ic:'trending-up', label:'Invest.'},
-  {ic:'landmark',    label:'Banca'},
-  {ic:'building-2',  label:'Ufficio'},
-  {ic:'smartphone',  label:'Digital'},
-  {ic:'coins',       label:'Monete'},
-  {ic:'briefcase',   label:'Lavoro'},
-  {ic:'home',        label:'Casa'},
-  {ic:'globe',       label:'Online'},
-];
-
-// Category emoji map for visual picker
-const CAT_EMOJI = {
-  food:'🍕', transport:'🚗', home:'🏠', shopping:'🛍',
-  health:'💊', entertain:'🎬', travel:'✈️', education:'📚',
-  salary:'💰', subscript:'🔄', invest:'📈', other:'🏷',
-};
-
-// Detect fintech brand from account name
-function detectBrand(name) {
-  if (!name) return null;
-  const n = name.toLowerCase();
-  for (const [key, brand] of Object.entries(FINTECH_BRANDS)) {
-    if (n.includes(key) || n.includes(brand.label.toLowerCase())) return key;
-  }
-  return null;
-}
-
-// Render account icon (fintech badge OR lucide icon)
-function renderAccIcon(acc, size=26, radius=8) {
-  const brand = detectBrand(acc.name);
-  if (brand) {
-    const b = FINTECH_BRANDS[brand];
-    return `<div class="ft-badge" style="width:${size}px;height:${size}px;border-radius:${radius}px;background:${b.bg};font-size:${Math.floor(size*.38)}px">${b.text}</div>`;
-  }
-  return `<div class="ft-badge" style="width:${size}px;height:${size}px;border-radius:${radius}px;background:${acc.color||'var(--br)'}22">
-    <i data-lucide="${acc.icon||'wallet'}" style="width:${Math.floor(size*.55)}px;height:${Math.floor(size*.55)}px;color:${acc.color||'var(--br)'}"></i>
-  </div>`;
-}
+// FINTECH_BRANDS, detectBrand, and renderAccIcon have been moved to app.js
 
 const CATS={
 

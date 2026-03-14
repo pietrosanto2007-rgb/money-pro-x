@@ -416,8 +416,15 @@ function renderAccIcon(acc, size=26, radius=8) {
       <img src="${acc.logoUrl}" alt="${acc.name}" style="width:100%;height:100%;object-fit:contain;border-radius:${radius-2}px">
     </div>`;
   }
-  const brand = detectBrand(acc.name);
-  if (brand) {
+  
+  let brand = null;
+  if (acc.icon && acc.icon.startsWith('ft:')) {
+    brand = acc.icon.substring(3); // Explicitly chosen brand
+  } else {
+    brand = detectBrand(acc.name); // Auto-detected fallback
+  }
+
+  if (brand && FINTECH_BRANDS[brand]) {
     const b = FINTECH_BRANDS[brand];
     if (b.localIcon) {
       return `<div class="ft-badge" style="width:${size}px;height:${size}px;border-radius:${radius}px;background:white;padding:2px;border:1px solid var(--bo)">
@@ -3816,11 +3823,14 @@ function renderInvestList(){
     const cost=convertToMainCurrency(costRaw,invCurr);
     const pnlRow=val-cost;
     const colRow=pnlRow>=0?'var(--ok)':'var(--bd)';
+    const color = _ACC_COLORS[Math.abs(hashString(sym)) % _ACC_COLORS.length] || 'var(--acc)';
+
     return `<div class="flex items-center justify-between gap-3 p-3 rounded-2xl" style="background:var(--bg2)">
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
-          <div class="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden" style="background:var(--card)">
-            ${inv.logoUrl?`<img src="${inv.logoUrl}" alt="${sym}" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=\'text-xs font-black\'>${sym}</span>'">`:`<span class="text-xs font-black">${sym}</span>`}
+          <div class="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden flex-shrink-0" style="background:var(--card)">
+            ${inv.logoUrl?`<img src="${inv.logoUrl}" alt="${sym}" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">` : ''}
+            <div style="width:100%;height:100%;background:${color};display:${inv.logoUrl ? 'none' : 'flex'};align-items:center;justify-content:center;color:white;font-weight:900;font-size:14px">${sym.charAt(0).toUpperCase()}</div>
           </div>
           <div class="min-w-0">
             <p class="text-sm font-bold truncate">${inv.name||sym}</p>
