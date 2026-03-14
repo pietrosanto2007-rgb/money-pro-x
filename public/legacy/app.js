@@ -48,7 +48,8 @@ function saveTxLocal(payload){
 }
 
 async function saveTx(e){
-  e.preventDefault(); haptic();
+  if(e) e.preventDefault();
+  haptic();
   if(!hasAccounts()){
     toast('Crea prima un conto','warn');
     openAccountSetup();
@@ -57,150 +58,81 @@ async function saveTx(e){
   showLoader();
   let payload=null;
   try {
-    const isTransfer=(AppState.fType==='transfer');
-    const accFrom=document.getElementById('txAccFrom').value;
-    const accTo  =document.getElementById('txAccTo').value;
-    if(isTransfer&&accFrom===accTo){toast('Scegli due conti diversi','error');return;}
-    const amt=parseFloat(document.getElementById('txAmt').value);
-    if(isNaN(amt)||amt<=0){toast('Inserisci un importo valido','error');return;}
+    const isTr = (AppState.fType === 'transfer');
+    const amt = parseFloat(document.getElementById('txAmt').value);
+    if(isNaN(amt)||amt<=0) throw new Error('Inserisci un importo valido');
 
-    const tags=isTransfer?'[]':JSON.stringify(Array.from(document.querySelectorAll('.tbtn.on')).map(b=>b.dataset.tag));
-    payload={
-      type:AppState.fType, amount:amt,
-      date:document.getElementById('txDate').value,
-      time:document.getElementById('txTime')?.value||'',
-      category_id:isTransfer?'other':(document.getElementById('txCat').value||'other'),
-      description:document.getElementById('txDesc').value.trim()||(isTransfer?`Giro ${accFrom}→${accTo}`:''),
-      account:isTransfer?accFrom:(document.getElementById('txAcc').value||getDefaultAccountName()),
-      account_to:isTransfer?accTo:null, tags,
+    const acc = isTr ? document.getElementById('txAccFrom').value : (document.getElementById('txAcc').value || getDefaultAccountName());
+    const accTo = isTr ? document.getElementById('txAccTo').value : null;
+    if(isTr && acc === accTo) throw new Error('Scegli due conti diversi');
+    if(!acc) throw new Error('Seleziona un conto');
+
+    const tags = isTr ? '[]' : JSON.stringify(Array.from(document.querySelectorAll('.tbtn.on')).map(b=>b.dataset.tag));
+    
+    payload = {
+      type: AppState.fType,
+      amount: amt,
+      date: document.getElementById('txDate').value,
+      time: document.getElementById('txTime')?.value || '',
+      category_id: isTr ? 'other' : (document.getElementById('txCat').value || 'other'),
+      description: document.getElementById('txDesc').value.trim() || (isTr ? `Giro ${acc}→${accTo}` : ''),
+      account: acc,
+      account_to: accTo,
+      tags
     };
-    if(!payload.account){ toast('Seleziona un conto','error'); return; }
 
-    if(OFFLINE||!db){
+    if(OFFLINE || !db){
       saveTxLocal(payload);
-      toast(AppState.editId?'Aggiornato ✓':(isTransfer?`Giro ${fmt(amt)} ✓`:'Salvato ✓'),'success');
-      try {
-        if (payload.type === 'transfer') { await DatabaseService.updateAccountBalance(payload.account); if (payload.account_to) await DatabaseService.updateAccountBalance(payload.account_to); }
-        else await DatabaseService.updateAccountBalance(payload.account);
-      } catch (e) {}
-      return;
-    }
-
-    if(isTransfer){
-      // Giroconto (robusto): 1 riga `transactions` (type='transfer') + meta.account_to
-      const existing=AppState.editId ? AppState.transactions.find(x=>x.id===AppState.editId) : null;
-      const isLegacyExisting=!!(existing && (existing._transfer_ref || existing._partner_id));
-      const desc=payload.description;
-      let savedId=null;
-
-      // Update in-place only for "new" giroconti (single-row) that already exist on DB.
-      if(AppState.editId && !isLegacyExisting && isUUID(AppState.editId)){
-        const upd=await dbUpdateTxRow(AppState.editId, toDbPayload(payload,'transfer',desc));
-        if(upd.error) throw upd.error;
-        savedId=upd.data?.[0]?.id || null;
-      }
-      // Fallback: insert (new giro, local-only edit, or legacy conversion).
-      if(!savedId){
-        const ins=await dbInsertTxRow(toDbPayload(payload,'transfer',desc));
-        if(ins.error) throw ins.error;
-        savedId=ins.data?.[0]?.id || null;
-      }
-      if(!savedId) throw new Error('Salvataggio giro fallito');
-
-      // Meta e' necessaria per ricostruire il "conto di destinazione".
-      await DatabaseService.saveTxMetaStrict(savedId,{account_to:accTo,tags:'[]'});
-
-      // If editing a legacy giro (2 righe), convert it by deleting the old pair.
-      if(AppState.editId && isLegacyExisting){
-        try{
-          const oldRef=existing?._transfer_ref;
-          if(oldRef){
-            await db.from('transactions').delete().like('description',`[GIRO:${oldRef}]%`);
-          } else if(existing?._partner_id){
-            await Promise.all([
-              db.from('transactions').delete().eq('id',AppState.editId),
-              db.from('transactions').delete().eq('id',existing._partner_id),
-            ]);
-          } else {
-            await db.from('transactions').delete().eq('id',AppState.editId);
-          }
-          try{ await DatabaseService.deleteTxMeta(AppState.editId); }catch(e){}
-          try{ if(existing?._partner_id) await DatabaseService.deleteTxMeta(existing._partner_id); }catch(e){}
-        }catch(delErr){
-          // Rollback: remove the new single-row giro to avoid duplicates.
-          try{ await db.from('transactions').delete().eq('id',savedId); }catch(e){}
-          try{ await DatabaseService.deleteTxMeta(savedId); }catch(e){}
-          throw delErr;
-        }
-      }
-
-      const merged={
-        id:savedId,
-        type:'transfer',
-        amount:amt,
-        date:payload.date,
-        time:payload.time||null,
-        category_id:payload.category_id,
-        description:desc,
-        account:accFrom,
-        account_to:accTo,
-        tags:'[]',
-      };
-      if(AppState.editId){
-        const i=AppState.transactions.findIndex(x=>x.id===AppState.editId);
-        if(i>=0) AppState.transactions[i]=merged; else AppState.transactions.push(merged);
+      toast('Salvato localmente ✓','success');
+    } else {
+      const dbP = toDbPayload(payload, isTr ? 'transfer' : payload.type, payload.description);
+      let result = null;
+      if(AppState.editId && isUUID(AppState.editId)){
+        result = await dbUpdateTxRow(AppState.editId, dbP);
       } else {
-        AppState.transactions.push(merged);
+        result = await dbInsertTxRow(dbP);
+      }
+      
+      if(result.error) throw result.error;
+      const savedId = result.data?.[0]?.id;
+      if(!savedId) throw new Error('Salvataggio database fallito (nessun ID)');
+
+      // Meta (tags, account_to)
+      try {
+        if(isTr || tags !== '[]') await DatabaseService.saveTxMetaStrict(savedId, {account_to: accTo, tags});
+        else await DatabaseService.deleteTxMeta(savedId);
+      } catch(mE){ console.warn('Meta non-blocking error:', mE); }
+
+      // Update Local State
+      payload.id = savedId;
+      if(AppState.editId){
+        const idx = AppState.transactions.findIndex(x=>x.id===AppState.editId);
+        if(idx>=0) AppState.transactions[idx] = payload; else AppState.transactions.push(payload);
+      } else {
+        AppState.transactions.push(payload);
       }
       saveTransactions();
-      toast(AppState.editId?`Giro ${fmt(amt)} aggiornato ✓`:`Giro ${fmt(amt)} salvato ✓`,'success');
-      if(!OFFLINE&&db){ await DatabaseService.updateAccountBalance(accFrom); await DatabaseService.updateAccountBalance(accTo); }
-
-    } else {
-      // — Normal transaction —
-      const dbP=toDbPayload(payload);
-      let result=null;
-      let savedId=null;
-      if(AppState.editId && isUUID(AppState.editId)){
-        result=await dbUpdateTxRow(AppState.editId, dbP);
-        if(result.error) throw result.error;
-        savedId=result.data?.[0]?.id || null;
-      }
-      if(!savedId){
-        result=await dbInsertTxRow(dbP);
-        if(result.error) throw result.error;
-        savedId=result.data?.[0]?.id || null;
-      }
-      if(savedId){
-        try{
-          if(payload.account_to||tags!=='[]') await DatabaseService.saveTxMeta(savedId,{account_to:payload.account_to,tags});
-          else await DatabaseService.deleteTxMeta(savedId);
-        }catch(e){ console.warn('txmeta.save (non-blocking)',e); }
-      }
-      if(savedId){
-        const row={id:savedId,...payload};
-        if(AppState.editId){ const i=AppState.transactions.findIndex(x=>x.id===AppState.editId); if(i>=0) AppState.transactions[i]=row; }
-        else AppState.transactions.push(row);
-        saveTransactions();
-      }
-      toast(AppState.editId?'Aggiornato ✓':'Salvato ✓','success');
-      if(!OFFLINE&&db) await DatabaseService.updateAccountBalance(payload.account);
+      toast('Salvato nel database ✓','success');
     }
-  }catch(err){
-    console.error('saveTx error:',err);
+
+    // Update balances
+    await DatabaseService.updateAccountBalance(payload.account);
+    if(payload.account_to) await DatabaseService.updateAccountBalance(payload.account_to);
+
+  } catch(err) {
+    console.error('saveTx error:', err);
+    const errMsg = err.message || err.details || 'Errore imprevisto';
     if(payload){
-      try{ saveTxLocal(payload); }catch(e){}
-      toast(`Salvato localmente (${err.message||'errore sync'})`,'warn');
-      try {
-        if (payload.type === 'transfer') { await DatabaseService.updateAccountBalance(payload.account); if (payload.account_to) await DatabaseService.updateAccountBalance(payload.account_to); }
-        else await DatabaseService.updateAccountBalance(payload.account);
-      } catch (e) {}
+      saveTxLocal(payload);
+      toast(`Errore Sync: ${errMsg}. Salvato in locale.`,'warn');
     } else {
-      toast(`Errore: ${err.message||'operazione non riuscita'}`,'error');
+      toast(`Errore: ${errMsg}`,'error');
     }
   } finally {
     hideLoader();
-    closeAll(); renderAll(); if(!AppState.editId) checkAch();
+    closeAll();
+    renderAll();
+    if(!AppState.editId) checkAch();
   }
 }
 
@@ -1147,6 +1079,16 @@ function applyLayouts(){
     const order=UserConfig.layout?.[zone];
     if(Array.isArray(order) && order.length) _applyOrder(zoneEl, order);
   });
+  
+  // Sync Investment Settings UI
+  if(UserConfig.investApi){
+    const inpKey = document.getElementById('setInvApiKey');
+    const selProv = document.getElementById('setInvProvider');
+    const chkInc = document.getElementById('setInvInclude');
+    if(inpKey) inpKey.value = UserConfig.investApi.apiKey || '';
+    if(selProv) selProv.value = UserConfig.investApi.provider || 'finnhub';
+    if(chkInc) chkInc.checked = UserConfig.investIncludeInTotal !== false;
+  }
 }
 
 function setLayoutFromDOM(zone){
@@ -2346,7 +2288,22 @@ function saveSettings(){
   UserConfig.defaultWallet = document.getElementById('defWalletS')?.value || UserConfig.defaultWallet || '';
   UserConfig.goalName = document.getElementById('gNameI')?.value||'';
   UserConfig.goalVal  = document.getElementById('gValI')?.value||'';
-  saveConfig(); renderAll();
+
+  // Investment settings from new UI
+  const invProv = document.getElementById('setInvProvider')?.value || 'finnhub';
+  const invKey = document.getElementById('setInvApiKey')?.value || '';
+  const invInc = document.getElementById('setInvInclude')?.checked !== false;
+
+  UserConfig.investApi = { apiKey: invKey, provider: invProv };
+  UserConfig.investIncludeInTotal = invInc;
+  
+  // Persist to localStorage for immediate retrieval on reload
+  localStorage.setItem('mpxInvestApiKey', invKey);
+  localStorage.setItem('mpxInvestProvider', invProv);
+
+  saveConfig(); 
+  // We don't renderAll here to avoid focus loss during typing, 
+  // unless it's a select/toggle. 
 }
 function updateSyncStatus(state){
   const dot=document.getElementById('sDot');
@@ -3613,10 +3570,26 @@ async function refreshInvestQuotes(){
     const quotes={...(AppState.investQuotes||{})};
     await Promise.all(symbols.map(async sym=>{
       try{
-        const resp=await fetch(`https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(token)}`);
+        const provider = (UserConfig.investApi||{}).provider || 'finnhub';
+        let url = '';
+        if(provider === 'alphavantage'){
+          url = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${encodeURIComponent(sym)}&apikey=${encodeURIComponent(token)}`;
+        } else {
+          url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${encodeURIComponent(token)}`;
+        }
+        
+        const resp=await fetch(url);
         if(!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data=await resp.json();
-        const price=typeof data?.c==='number'?data.c:null;
+        
+        let price = null;
+        if(provider === 'alphavantage'){
+          const quote = data['Global Quote'];
+          price = quote && quote['05. price'] ? parseFloat(quote['05. price']) : null;
+        } else {
+          price = typeof data?.c==='number' && data.c > 0 ? data.c : null;
+        }
+
         if(price){
           quotes[sym]={price,at:Date.now(),raw:data};
         }
@@ -3747,9 +3720,11 @@ function openInvestM(){
 function openInvestOnboard(){
   try{
     const keyInp=document.getElementById('invApiKeyInp');
+    const provSel=document.getElementById('invProviderSel');
     const toggle=document.getElementById('invIncludeToggle');
     const api=UserConfig.investApi||{};
     if(keyInp) keyInp.value=api.apiKey||localStorage.getItem('mpxInvestApiKey')||'';
+    if(provSel) provSel.value=api.provider||localStorage.getItem('mpxInvestProvider')||'finnhub';
     if(toggle) toggle.checked=UserConfig.investIncludeInTotal!==false;
   }catch(e){}
   openModal('investOnboardM');
@@ -3760,22 +3735,24 @@ function skipInvestOnboard(){
 }
 function saveInvestOnboard(){
   const key=(document.getElementById('invApiKeyInp')?.value||'').trim();
+  const prov=(document.getElementById('invProviderSel')?.value||'finnhub');
   const include=document.getElementById('invIncludeToggle')?.checked!==false;
   if(!key){
-    toast('Inserisci una API key valida (es. Finnhub)','error');
+    toast('Inserisci una API key valida','error');
     return;
   }
   try{
     localStorage.setItem('mpxInvestApiKey',key);
+    localStorage.setItem('mpxInvestProvider',prov);
     localStorage.setItem('mpxInvestOnboardDone','1');
-  }catch(e){}
-  UserConfig.investApi=UserConfig.investApi||{provider:'finnhub',apiKey:''};
-  UserConfig.investApi.apiKey=key;
-  UserConfig.investIncludeInTotal=include;
-  saveConfig();
-  toast('API investimenti salvata ✓','success');
-  closeAll(true);
-  refreshInvestQuotes();
+    UserConfig.investApi={apiKey:key,provider:prov};
+    UserConfig.investIncludeInTotal=include;
+    DatabaseService.pushSettings();
+    toast('Configurazione salvataggi ✓','success');
+    closeAll();
+    refreshInvestQuotes();
+    renderAll('dash');
+  }catch(e){ toast('Errore nel salvataggio','error'); }
 }
 
 async function searchInvestSymbols(e){

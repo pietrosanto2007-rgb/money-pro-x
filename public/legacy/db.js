@@ -828,7 +828,8 @@ const DatabaseService = {
           this._saveInvestments();
         } else if(error){
           console.error('Supabase invest.save error:', error);
-          if(typeof toast === 'function') toast('Errore salvataggio database','error');
+          const msg = error.message || error.details || 'Errore database';
+          if(typeof toast === 'function') toast(`Errore DB: ${msg}`, 'error');
         }
       }
     }catch(e){ console.warn('invest.save',e); }
