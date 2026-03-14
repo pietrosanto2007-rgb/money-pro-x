@@ -541,8 +541,6 @@ async function init(){
   if(!UserConfig.goals)         UserConfig.goals=[];
   if(!UserConfig.investments)   UserConfig.investments=[];
   if(typeof UserConfig.investIncludeInTotal!=='boolean') UserConfig.investIncludeInTotal=true;
-  if(!UserConfig.investApi)     UserConfig.investApi={apiKey:''}; // legacy (unused with Yahoo)
-
   // 0. Auto-refresh investments on load (REMOVED: moved later to ensure data is loaded first)
 
   // Prefer per-entity caches (newer than snapshot in mpxCfg2)
@@ -3562,9 +3560,9 @@ async function refreshInvestQuotes(force=false){
     const results = data?.quoteResponse?.result;
     if(!Array.isArray(results)) throw new Error('Yahoo quoteResponse non valido');
     for(const r of results){
-      const sym = String(r?.symbol||'').toUpperCase();
-      const price = typeof r?.regularMarketPrice === 'number' ? r.regularMarketPrice : null;
-      if(sym && price != null) quotes[sym] = { price, at: now, raw: r };
+      const sym = String(r?.symbol||'').trim().toUpperCase();
+      const price = parseYahooPrice(r?.regularMarketPrice ?? r?.regularMarketPreviousClose);
+      if(sym && price!=null) quotes[sym] = { price, at: now, raw: r };
       // opportunistic profile cache
       if(sym){
         AppState.investProfiles = AppState.investProfiles || {};
@@ -3727,17 +3725,26 @@ function yahooProxy(endpoint, params){
   const qs = new URLSearchParams({ endpoint, ...params });
   return '/api/yahoo?' + qs.toString();
 }
+function parseYahooPrice(v){
+  if(v==null) return null;
+  if(typeof v==='number') return Number.isFinite(v)?v:null;
+  if(typeof v==='object'&&v!==null&&typeof v.raw==='number') return Number.isFinite(v.raw)?v.raw:null;
+  const n=parseFloat(v);
+  return Number.isFinite(n)?n:null;
+}
 function normYahooSymbol(input){
-  const raw = String(input||'').trim().toUpperCase();
+  const raw = String(input||'').trim().toUpperCase().replace(/\s+/g,'');
   if(!raw) return '';
-  // Support legacy style ENI:XMIL -> ENI.MI (Yahoo uses .MI)
+  // Legacy ENI:XMIL -> ENI.MI
   if(raw.includes(':')){
     const [sym, ex] = raw.split(':');
-    const exch = (ex||'').trim().toUpperCase();
-    if(exch === 'XMIL') return `${String(sym||'').trim().toUpperCase()}.MI`;
-    return String(sym||'').trim().toUpperCase();
+    const exch = (ex||'').trim();
+    if(exch==='XMIL') return (sym||'').trim()+'.MI';
+    return (sym||'').trim();
   }
-  return raw.replace(/\s+/g,'');
+  // Yahoo US stocks: AAPL.US -> AAPL (Yahoo uses plain ticker)
+  if(raw.endsWith('.US')) return raw.slice(0,-3);
+  return raw;
 }
 async function searchInvestSymbols(e){
   const input = e && e.target ? e.target : document.getElementById('invSymbol');
@@ -3812,7 +3819,7 @@ async function validateInvestSymbol(sym){
     const data = await resp.json();
     const results = data?.quoteResponse?.result;
     if(!Array.isArray(results) || !results.length) return false;
-    return results.some(r => String(r?.symbol||'').toUpperCase() === s && typeof r?.regularMarketPrice === 'number');
+    return results.some(r => String(r?.symbol||'').trim().toUpperCase() === s && parseYahooPrice(r?.regularMarketPrice ?? r?.regularMarketPreviousClose) != null);
   }catch(e){ return false; }
 }
 

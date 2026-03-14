@@ -49,7 +49,6 @@ let UserConfig = {
   // Investimenti: portafoglio e preferenze
   investments:[],          // [{ id, symbol, name, quantity, currency, buyPrice, account, note, includeInTotal }]
   investIncludeInTotal:true, // se true il valore corrente si somma al Patrimonio Netto
-  investApi:{ apiKey:'' }, // Twelve Data
 };
 const Categories = {
   food:     {l:'Cibo & Rist.',   ic:'utensils',     col:'#FF9500',bg:'rgba(255,149,0,.12)',   kw:['spesa','ristorante','pizza','bar','caffè','paninoteca','gelato','cibo','lidl','esselunga','conad','carrefour','supermercato']},
