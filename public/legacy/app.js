@@ -3754,6 +3754,11 @@ function normEodSymbol(input){
     if(exch === 'XMIL') return `${String(sym||'').trim().toUpperCase()}.MI`;
     return String(sym||'').trim().toUpperCase();
   }
+  // If user types a bare ticker (e.g. "AAPL"), default to US exchange.
+  if(!raw.includes('.')){
+    const bare = raw.replace(/\s+/g,'');
+    if(/^[A-Z0-9]{1,10}$/.test(bare)) return `${bare}.US`;
+  }
   return raw;
 }
 async function searchInvestSymbols(e){
