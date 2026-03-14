@@ -409,8 +409,13 @@ function detectBrand(name) {
   return null;
 }
 
-// Render account icon (fintech badge OR lucide icon)
+// Render account icon (fintech badge OR custom logo OR lucide icon)
 function renderAccIcon(acc, size=26, radius=8) {
+  if (acc.logoUrl) {
+    return `<div class="ft-badge" style="width:${size}px;height:${size}px;border-radius:${radius}px;background:white;padding:2px;border:1px solid var(--bo)">
+      <img src="${acc.logoUrl}" alt="${acc.name}" style="width:100%;height:100%;object-fit:contain;border-radius:${radius-2}px">
+    </div>`;
+  }
   const brand = detectBrand(acc.name);
   if (brand) {
     const b = FINTECH_BRANDS[brand];
@@ -644,7 +649,79 @@ async function init(){
 
   // 11. Carica tutto dal DB in background
   if(!OFFLINE && db){
-    _syncAllFromDB();
+    await _syncAllFromDB();
+  }
+
+  // 12. Automazione abbonamenti
+  try {
+    await processPendingSubscriptions();
+  } catch(e) { console.warn('Subscription automation failed', e); }
+}
+
+async function processPendingSubscriptions() {
+  const subs = UserConfig.subscriptions || [];
+  const today = new Date();
+  today.setHours(0,0,0,0);
+  let changed = false;
+  let createdCount = 0;
+
+  for (const s of subs) {
+    if (!s.active) continue;
+    let nextDate = new Date(s.nextDate);
+    nextDate.setHours(0,0,0,0);
+
+    while (nextDate <= today) {
+      const accName = UserConfig.defaultWallet || (UserConfig._accounts && UserConfig._accounts[0] ? UserConfig._accounts[0].name : '');
+      const payload = {
+        type: 'expense',
+        amount: s.amount,
+        date: fmtDate(nextDate),
+        time: '09:00',
+        category_id: 'subscript',
+        description: `Abbonamento: ${s.name}`,
+        account: accName
+      };
+
+      try {
+        if (OFFLINE || !db) {
+          saveTxLocal(payload);
+        } else {
+          const dbP = toDbPayload(payload);
+          const result = await dbInsertTxRow(dbP);
+          if (result.error) throw result.error;
+          const savedId = result.data?.[0]?.id;
+          if (savedId) payload.id = savedId;
+          AppState.transactions.push(payload);
+          saveTransactions();
+        }
+        createdCount++;
+        console.log(`Automazione: Creata transazione per ${s.name} del ${payload.date}`);
+
+        // Calcola prossima data
+        if (s.frequency === 'weekly') nextDate.setDate(nextDate.getDate() + 7);
+        else if (s.frequency === 'yearly') nextDate.setFullYear(nextDate.getFullYear() + 1);
+        else nextDate.setMonth(nextDate.getMonth() + 1); // default monthly
+
+        s.nextDate = fmtDate(nextDate);
+        changed = true;
+      } catch (err) {
+        console.error(`Errore automazione ${s.name}:`, err);
+        break;
+      }
+    }
+
+    // Salva la subscription aggiornata
+    if (changed) {
+      await DatabaseService.saveSub(s);
+    }
+  }
+
+  if (changed) {
+    saveConfig();
+    renderAll();
+    if (createdCount > 0) {
+      toast(`${createdCount} transazione/i abbonamento create automaticamente ✓`, 'success');
+    }
   }
 }
 
@@ -2361,12 +2438,21 @@ async function addWallet(){
   if(UserConfig._accounts?.find(a=>a.name===n)){toast('Conto già esistente','warn');return;}
   const type=document.getElementById('nWalletType')?.value||'checking';
   const bal=parseFloat(document.getElementById('nWalletBal')?.value)||0;
+  const link=document.getElementById('nWalletLink')?.value.trim()||'';
   const color=_ACC_COLORS[_accColorIdx%_ACC_COLORS.length];
   const selectedIcon=document.getElementById('nWalletIcon')?.value||'wallet';
   const icon=selectedIcon||({checking:'credit-card',savings:'piggy-bank',cash:'banknote',credit:'credit-card',invest:'trending-up'}[type]||'wallet');
-  const acc={id:'lac'+Date.now(),name:n,type,color,icon,initialBalance:bal};
+
+  // Fetch favicon from link if provided
+  let logoUrl = null;
+  if (link) {
+    logoUrl = await fetchFavicon(link);
+  }
+
+  const acc={id:'lac'+Date.now(),name:n,type,color,icon,initialBalance:bal,logoUrl};
   document.getElementById('nWallet').value='';
   if(document.getElementById('nWalletBal')) document.getElementById('nWalletBal').value='';
+  if(document.getElementById('nWalletLink')) document.getElementById('nWalletLink').value='';
   await DatabaseService.saveAccount(acc);
   if(!UserConfig.defaultWallet){ UserConfig.defaultWallet=acc.name; saveConfig(); }
   renderWalletSettings(); populateWalletSel(); renderAll();
@@ -3411,6 +3497,21 @@ function openDebtsM(){
 /* ============================================================
    ABBONAMENTI
 ============================================================ */
+async function fetchFavicon(nameOrUrl) {
+  try {
+    let url = nameOrUrl;
+    if (!url.includes('.')) return null; // Not a URL
+    if (!/^https?:\/\//i.test(url)) url = 'https://' + url;
+    
+    const resp = await fetch(`/api/favicon?url=${encodeURIComponent(url)}`);
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data.iconUrl || null;
+  } catch (e) {
+    return null;
+  }
+}
+
 async function addSubscription(){
   const name=document.getElementById('subName')?.value.trim();
   const amt=parseFloat(document.getElementById('subAmt')?.value)||0;
@@ -3419,7 +3520,14 @@ async function addSubscription(){
   if(!name){toast('Inserisci il nome','warn');return;}
   if(!amt||amt<=0){toast('Inserisci un importo valido','error');return;}
   if(!UserConfig.subscriptions) UserConfig.subscriptions=[];
-  const sub={name,amount:amt,frequency:freq,nextDate:next,active:true};
+  
+  // Tenta di recuperare icona
+  let logoUrl = null;
+  if (name.includes('.')) {
+    logoUrl = await fetchFavicon(name);
+  }
+
+  const sub={name,amount:amt,frequency:freq,nextDate:next,active:true,logoUrl};
   await DatabaseService.saveSub(sub);
   document.getElementById('subName').value='';
   document.getElementById('subAmt').value='';
@@ -3459,8 +3567,16 @@ function renderSubsList(){
     const mo=subMonthlyAmount(s);
     const daysUntil=Math.ceil((new Date(s.nextDate)-new Date())/(1000*60*60*24));
     const urgent=daysUntil<=7&&daysUntil>=0;
+    const logoHtml = s.logoUrl 
+      ? `<img src="${s.logoUrl}" class="w-10 h-10 rounded-2xl object-cover flex-shrink-0" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex'">`
+      : '';
+    const fallbackHtml = `<div class="w-10 h-10 rounded-2xl flex items-center justify-center text-white font-black text-sm flex-shrink-0" style="background:linear-gradient(135deg,var(--acc),var(--br)); ${s.logoUrl ? 'display:none' : ''}">${s.name.charAt(0).toUpperCase()}</div>`;
+    
     return `<div class="flex items-center gap-3 p-3 rounded-2xl" style="background:var(--bg2);opacity:${s.active?1:.55}">
-      <div class="w-10 h-10 rounded-2xl flex items-center justify-center text-white font-black text-sm flex-shrink-0" style="background:linear-gradient(135deg,var(--acc),var(--br))">${s.name.charAt(0).toUpperCase()}</div>
+      <div class="relative w-10 h-10 flex-shrink-0">
+        ${logoHtml}
+        ${fallbackHtml}
+      </div>
       <div class="flex-1 min-w-0">
         <p class="font-bold text-sm truncate">${s.name}</p>
         <p class="text-[10px]" style="color:${urgent?'var(--wn)':'var(--t2)'}">
@@ -3588,11 +3704,18 @@ async function refreshInvestQuotes(force=false){
       if(sym){
         AppState.investProfiles = AppState.investProfiles || {};
         const prof = AppState.investProfiles[sym] || {};
+        const autoLogo = `https://s3-symbol-logo.tradingview.com/${sym.split('.')[0].toLowerCase()}.svg`;
         AppState.investProfiles[sym] = {
           name: prof.name || r.shortName || r.longName || sym,
           currency: prof.currency || r.currency || '',
-          logoUrl: prof.logoUrl || '',
+          logoUrl: prof.logoUrl || autoLogo,
         };
+        // Auto-assign logoUrl to investments that don't have one yet
+        const matchInv = (UserConfig.investments||[]).find(i => normYahooSymbol(i.symbol) === sym);
+        if (matchInv && !matchInv.logoUrl) {
+          matchInv.logoUrl = autoLogo;
+          DatabaseService._saveInvestments();
+        }
       }
     }
 
@@ -3697,7 +3820,7 @@ function renderInvestList(){
       <div class="flex-1 min-w-0">
         <div class="flex items-center gap-2">
           <div class="w-9 h-9 rounded-xl flex items-center justify-center overflow-hidden" style="background:var(--card)">
-            ${inv.logoUrl?`<img src="${inv.logoUrl}" alt="${sym}" style="width:100%;height:100%;object-fit:cover">`:`<span class="text-xs font-black">${sym}</span>`}
+            ${inv.logoUrl?`<img src="${inv.logoUrl}" alt="${sym}" style="width:100%;height:100%;object-fit:cover" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=\'text-xs font-black\'>${sym}</span>'">`:`<span class="text-xs font-black">${sym}</span>`}
           </div>
           <div class="min-w-0">
             <p class="text-sm font-bold truncate">${inv.name||sym}</p>
@@ -3870,11 +3993,18 @@ async function fetchInvestProfile(sym){
     const r = data?.quoteResponse?.result?.[0];
     if(!r) return;
     
+    // Tenta di indovinare la logoUrl (Ticker -> Logo)
+    // Usiamo un servizio pubblico affidabile per i loghi dei ticker
+    let logoUrl = `https://s3-symbol-logo.tradingview.com/${symbol.split('.')[0].toLowerCase()}.svg`;
+    
+    // Se è un titolo italiano o altro mercato, proviamo a pulire il simbolo
+    const cleanSym = symbol.split('.')[0].toUpperCase();
+    
     AppState.investProfiles = AppState.investProfiles || {};
     const prof = {
       name: r.shortName || r.longName || symbol,
       currency: r.currency || '',
-      logoUrl: '',
+      logoUrl: logoUrl,
     };
     AppState.investProfiles[symbol] = prof;
     
@@ -3882,7 +4012,10 @@ async function fetchInvestProfile(sym){
     const curEl  = document.getElementById('invCurrency');
     if(nameEl && !nameEl.value && prof.name) nameEl.value = prof.name;
     if(curEl && prof.currency) curEl.value = prof.currency;
-  }catch(e){
+    
+    // Verifica se il logo esiste effettivamente (opzionale, ma utile)
+    // Lo facciamo pigramente: renderInvestList lo caricherà e se fallisce userà il fallback
+  } catch(e) {
     console.warn('invest.profile',e);
   }
 }

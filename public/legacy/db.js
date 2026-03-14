@@ -376,6 +376,7 @@ const DatabaseService = {
       icon: acc?.icon || this._iconForType(acc?.type),
       initialBalance: +(acc?.initialBalance ?? acc?.initial_balance ?? 0) || 0,
       currentBalance: acc?.currentBalance!=null ? +acc.currentBalance : (acc?.current_balance!=null ? +acc.current_balance : undefined),
+      logoUrl: acc?.logoUrl || null,
     });
 
     const hideDbBadge=()=>{ const b=document.getElementById('accsDbBadge'); if(b) b.classList.add('hidden'); };
@@ -386,7 +387,7 @@ const DatabaseService = {
         const {data,error}=await db.from('accounts').select('*').order('sort_order');
         if(!error){
           if(data?.length){
-            UserConfig._accounts=data.map(r=>({id:r.id,name:r.name,type:r.type||'checking',color:r.color||'#0066FF',icon:r.icon||'wallet',initialBalance:+r.initial_balance||0,currentBalance:r.current_balance!=null?+r.current_balance:undefined}));
+            UserConfig._accounts=data.map(r=>({id:r.id,name:r.name,type:r.type||'checking',color:r.color||'#0066FF',icon:r.icon||'wallet',initialBalance:+r.initial_balance||0,currentBalance:r.current_balance!=null?+r.current_balance:undefined,logoUrl:r.logo_url||null}));
             this._saveLocal();
             showDbBadge();
             return;
@@ -713,7 +714,7 @@ const DatabaseService = {
         const {data,error}=await db.from('subscriptions').select('*').order('created_at',{ascending:false});
         if(!error && data && (data.length||!localHas)){
           const today=fmtDate(new Date());
-          UserConfig.subscriptions=data.map(r=>({id:normId(r.id),name:r.name,amount:+r.amount||0,frequency:r.frequency||r.billing_cycle||r.cycle||'monthly',nextDate:r.next_date||r.next_billing||r.nextDate||today,active:r.active!==false,color:r.color||null}));
+          UserConfig.subscriptions=data.map(r=>({id:normId(r.id),name:r.name,amount:+r.amount||0,frequency:r.frequency||r.billing_cycle||r.cycle||'monthly',nextDate:r.next_date||r.next_billing||r.nextDate||today,active:r.active!==false,color:r.color||null,logoUrl:r.logo_url||null}));
           this._saveSubs(); return;
         }
       }catch(e){ console.warn('subs.load',e); }
@@ -724,7 +725,7 @@ const DatabaseService = {
   async saveSub(sub){
     if(!UserConfig.subscriptions) UserConfig.subscriptions=[];
     const s={...(sub||{})}; s.id=normId(s.id)||('ls'+Date.now()+'_'+Math.random().toString(36).slice(2,4));
-    s.name=(s.name||'').trim(); s.amount=+s.amount||0; s.frequency=s.frequency||s.cycle||'monthly'; s.nextDate=s.nextDate||s.next||fmtDate(new Date()); s.active=s.active!==false;
+    s.name=(s.name||'').trim(); s.amount=+s.amount||0; s.frequency=s.frequency||s.cycle||'monthly'; s.nextDate=s.nextDate||s.next||fmtDate(new Date()); s.active=s.active!==false; s.logoUrl=s.logoUrl||null;
     if(!s.name||!s.amount||s.amount<=0) return s;
     const idx=UserConfig.subscriptions.findIndex(x=>idEq(x.id,s.id)); if(idx>=0) UserConfig.subscriptions[idx]=Object.assign({},UserConfig.subscriptions[idx],s); else UserConfig.subscriptions.unshift(s);
     this._saveSubs();
